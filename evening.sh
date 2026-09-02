@@ -47,6 +47,12 @@ expand_list() {
   for item in "${items[@]}"; do
     if [[ -n "${FLEET_GROUPS[$item]:-}" || -n "${FLEET_CHILDREN[$item]:-}" ]]; then
       hosts="$hosts $(resolve_group "$item")"
+    elif [[ "$item" != *.* ]] && all_fleet_hosts | grep -qx "${item}.beamline"; then
+      # Bare short name (e.g. "admin", "pkg") that isn't a group name but
+      # matches a real host once .beamline is appended -- same fix as
+      # morning.sh, found the same way (--only=admin silently treated as
+      # an unresolvable literal hostname instead of admin.beamline).
+      hosts="$hosts ${item}.beamline"
     else
       hosts="$hosts $item"
     fi

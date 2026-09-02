@@ -50,6 +50,14 @@ expand_list() {
   for item in "${items[@]}"; do
     if [[ -n "${FLEET_GROUPS[$item]:-}" || -n "${FLEET_CHILDREN[$item]:-}" ]]; then
       hosts="$hosts $(resolve_group "$item")"
+    elif [[ "$item" != *.* ]] && all_fleet_hosts | grep -qx "${item}.beamline"; then
+      # Bare short name (e.g. "admin", "pkg") that isn't a group name but
+      # matches a real host once .beamline is appended. Real usability gap
+      # found by actually running this: the group for admin.beamline is
+      # named "control" (matching inventory.ini's functional-role naming),
+      # not "admin" -- typing --only=admin silently fell through to being
+      # treated as a literal, unresolvable hostname instead.
+      hosts="$hosts ${item}.beamline"
     else
       hosts="$hosts $item"
     fi
