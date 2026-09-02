@@ -18,7 +18,7 @@ FLEET_HOSTS=(
 )
 
 echo "=== Starting all beamline VMs (staggered, 10s apart) ==="
-for vm in $(virsh list --all --name | grep beamline); do
+for vm in $(virsh list --all --name | grep beamline || true); do
   state=$(virsh domstate "$vm")
   if [ "$state" = "shut off" ]; then
     echo "Starting $vm..."
