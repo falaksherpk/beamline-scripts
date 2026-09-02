@@ -5,6 +5,16 @@ export LIBVIRT_DEFAULT_URI="qemu:///system"
 cd "$(dirname "${BASH_SOURCE[0]}")"
 source fleet.conf
 
+# Prevent two instances of this script running concurrently against
+# the same fleet -- a stray cron job overlapping a manual run, or two
+# people running morning.sh/evening.sh at once, could otherwise race.
+LOCKFILE="/tmp/beamline-scripts-$(basename "$0").lock"
+exec 200>"$LOCKFILE"
+if ! flock -n 200; then
+  echo "ERROR: another instance of $(basename "$0") is already running (lock: $LOCKFILE)" >&2
+  exit 1
+fi
+
 FORCE=false
 ONLY=""
 SKIP=""
