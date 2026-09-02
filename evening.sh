@@ -46,46 +46,21 @@ fi
 echo "=== Target hosts for this run: ${FLEET_HOSTS[*]} ==="
 echo ""
 
-# --- SLURM drain: only relevant if hpc-ctl.beamline is in this run's scope ---
-if printf '%s\n' "${FLEET_HOSTS[@]}" | grep -qx "hpc-ctl.beamline"; then
-  echo "=== SLURM: checking for running jobs on HPC compute nodes (via hpc-ctl.beamline) ==="
-  RUNNING_JOBS=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 \
-       "$SSH_USER@hpc-ctl.beamline" "squeue -h -w hpc-c1.beamline,hpc-gpu.beamline" 2>/dev/null || true)
-
-  if [ -n "$RUNNING_JOBS" ]; then
-    echo "WARNING: jobs are still RUNNING on the HPC nodes:"
-    echo "$RUNNING_JOBS"
-    if [ "$FORCE" = false ]; then
-      echo ""
-      echo "ABORTING: shutting down now would kill these jobs. Re-run with --force to proceed anyway."
+# --- Pre-shutdown hooks: run hooks/<host>.pre-shutdown.sh for each host in
+# scope, if it exists, BEFORE any VM shutdown. Unlike morning.sh's post-boot
+# hooks, a nonzero exit here ABORTS the whole run -- this is where a hook
+# gets to say "not safe to proceed" (e.g. today: SLURM jobs still running).
+echo "=== Pre-shutdown hooks ==="
+for host in "${FLEET_HOSTS[@]}"; do
+  hook="$(dirname "${BASH_SOURCE[0]}")/hooks/${host}.pre-shutdown.sh"
+  if [ -x "$hook" ]; then
+    echo "--- running pre-shutdown hook for $host ---"
+    if ! SSH_KEY="$SSH_KEY" SSH_USER="$SSH_USER" FORCE="$FORCE" "$hook"; then
+      echo "ABORTING: pre-shutdown hook for $host exited non-zero"
       exit 1
     fi
-    echo "--force given: proceeding with shutdown despite running jobs."
-  else
-    echo "no running jobs on hpc-c1.beamline/hpc-gpu.beamline — safe to proceed"
   fi
-
-  echo ""
-  echo "=== SLURM: draining HPC compute nodes (via hpc-ctl.beamline) ==="
-  # NOTE: this does NOT prevent tomorrow's "Node unexpectedly rebooted" flag --
-  # that's triggered by the guest reporting a new boot time on next start,
-  # regardless of how gracefully it was shut down. morning.sh's resume step
-  # is still required either way; this is a courtesy/safety marker, not a
-  # substitute for it.
-  if ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 \
-       "$SSH_USER@hpc-ctl.beamline" '
-         set -e
-         for node in hpc-c1.beamline hpc-gpu.beamline; do
-           sudo scontrol update NodeName="$node" State=DOWN Reason="Scheduled evening shutdown"
-         done
-       '; then
-    echo "hpc-c1.beamline, hpc-gpu.beamline marked DOWN (scheduled shutdown)"
-  else
-    echo "WARNING: could not reach hpc-ctl.beamline to drain SLURM — proceeding with VM shutdown anyway"
-  fi
-else
-  echo "=== SLURM drain skipped (hpc-ctl.beamline not in this run's scope) ==="
-fi
+done
 
 echo ""
 echo "=== Requesting graceful ACPI shutdown for selected beamline VMs (staggered, 10s apart) ==="

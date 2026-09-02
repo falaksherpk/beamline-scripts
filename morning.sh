@@ -97,43 +97,17 @@ for host in "${FLEET_HOSTS[@]}"; do
     ping -c1 -W2 8.8.8.8 >/dev/null 2>&1 && echo 'internet:OK' || echo 'internet:FAIL'" 2>&1 || true
 done
 
-# --- SLURM resume: only relevant if hpc-ctl.beamline is in this run's scope ---
-if printf '%s\n' "${FLEET_HOSTS[@]}" | grep -qx "hpc-ctl.beamline"; then
-  echo ""
-  echo "=== SLURM: resuming HPC compute nodes after reboot (via hpc-ctl.beamline) ==="
-  # A full VM reboot always gives slurmd a new boot time, which slurmctld reports as
-  # "Node unexpectedly rebooted" and marks DOWN (ReturnToService=0, left at its safe
-  # default). Resuming here is idempotent: harmless if a node is already idle, so
-  # this always runs rather than trying to detect DOWN first.
-  if ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 \
-       "$SSH_USER@hpc-ctl.beamline" '
-         set -e
-         for node in hpc-c1.beamline hpc-gpu.beamline; do
-           sudo scontrol update NodeName="$node" State=RESUME
-         done
-       '; then
-    echo "resume issued for hpc-c1.beamline, hpc-gpu.beamline"
-  else
-    echo "WARNING: SLURM node resume failed — check manually: ssh hpc-ctl.beamline, then scontrol show node"
+# --- Post-boot hooks: run hooks/<host>.post-boot.sh for each host in scope,
+# if it exists. Lets host-specific startup behavior (e.g. today: SLURM
+# resume on hpc-ctl.beamline) live outside this script entirely, so this
+# script has no built-in knowledge of any particular group's needs.
+echo ""
+echo "=== Post-boot hooks ==="
+for host in "${FLEET_HOSTS[@]}"; do
+  hook="$(dirname "${BASH_SOURCE[0]}")/hooks/${host}.post-boot.sh"
+  if [ -x "$hook" ]; then
+    echo "--- running post-boot hook for $host ---"
+    SSH_KEY="$SSH_KEY" SSH_USER="$SSH_USER" "$hook" || \
+      echo "WARNING: post-boot hook for $host exited non-zero (non-fatal, continuing)"
   fi
-
-  echo ""
-  echo "=== SLURM: waiting for hpc-c1/hpc-gpu to report responding (up to 20s) ==="
-  for i in $(seq 1 4); do
-    states=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 \
-      "$SSH_USER@hpc-ctl.beamline" "sinfo -h -N -o '%N %T' -n hpc-c1.beamline,hpc-gpu.beamline" 2>/dev/null || true)
-    if [ -n "$states" ] && ! echo "$states" | grep -q '\*'; then
-      echo "both nodes responding"
-      break
-    fi
-    sleep 5
-  done
-
-  echo ""
-  echo "=== SLURM cluster state (from hpc-ctl.beamline) ==="
-  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 \
-    "$SSH_USER@hpc-ctl.beamline" 'sinfo' || echo "WARNING: could not reach hpc-ctl.beamline for sinfo"
-else
-  echo ""
-  echo "=== SLURM resume skipped (hpc-ctl.beamline not in this run's scope) ==="
-fi
+done
