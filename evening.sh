@@ -3,6 +3,7 @@ set -euo pipefail
 
 export LIBVIRT_DEFAULT_URI="qemu:///system"
 cd "$(dirname "${BASH_SOURCE[0]}")"
+# shellcheck source=./fleet.conf
 source fleet.conf
 
 # Prevent two instances of this script running concurrently against
@@ -54,12 +55,12 @@ expand_list() {
 }
 
 if [[ -n "$ONLY" ]]; then
-  FLEET_HOSTS=($(expand_list "$ONLY"))
+  mapfile -t FLEET_HOSTS < <(expand_list "$ONLY")
 elif [[ -n "$SKIP" ]]; then
   skip_hosts=$(expand_list "$SKIP")
-  FLEET_HOSTS=($(comm -23 <(all_fleet_hosts) <(echo "$skip_hosts")))
+  mapfile -t FLEET_HOSTS < <(comm -23 <(all_fleet_hosts) <(echo "$skip_hosts"))
 else
-  FLEET_HOSTS=($(all_fleet_hosts))
+  mapfile -t FLEET_HOSTS < <(all_fleet_hosts)
 fi
 
 echo "=== Target hosts for this run: ${FLEET_HOSTS[*]} ==="
@@ -91,7 +92,7 @@ done
 
 echo ""
 echo "=== Waiting for clean power-off (polling, up to 4 min) ==="
-for i in $(seq 1 24); do
+for _ in $(seq 1 24); do
   remaining=""
   for vm in "${FLEET_HOSTS[@]}"; do
     state=$(virsh domstate "$vm" 2>/dev/null || echo "shut off")

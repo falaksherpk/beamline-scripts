@@ -3,6 +3,7 @@ set -euo pipefail
 
 export LIBVIRT_DEFAULT_URI="qemu:///system"
 cd "$(dirname "${BASH_SOURCE[0]}")"
+# shellcheck source=./fleet.conf
 source fleet.conf
 
 # Prevent two instances of this script running concurrently against
@@ -55,12 +56,12 @@ expand_list() {
 }
 
 if [[ -n "$ONLY" ]]; then
-  FLEET_HOSTS=($(expand_list "$ONLY"))
+  mapfile -t FLEET_HOSTS < <(expand_list "$ONLY")
 elif [[ -n "$SKIP" ]]; then
   skip_hosts=$(expand_list "$SKIP")
-  FLEET_HOSTS=($(comm -23 <(all_fleet_hosts) <(echo "$skip_hosts")))
+  mapfile -t FLEET_HOSTS < <(comm -23 <(all_fleet_hosts) <(echo "$skip_hosts"))
 else
-  FLEET_HOSTS=($(all_fleet_hosts))
+  mapfile -t FLEET_HOSTS < <(all_fleet_hosts)
 fi
 
 echo "=== Target hosts for this run: ${FLEET_HOSTS[*]} ==="
@@ -94,7 +95,7 @@ wait_for_ssh() {
 
   local host=$1
   local result_file=$2
-  for i in $(seq 1 48); do
+  for _ in $(seq 1 48); do
     if ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 \
          -o BatchMode=yes "$SSH_USER@$host" true 2>/dev/null; then
       echo "ready" > "$result_file"

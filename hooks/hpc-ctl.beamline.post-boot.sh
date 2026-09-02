@@ -27,7 +27,7 @@ fi
 
 echo ""
 echo "=== [$HOST hook] SLURM: waiting for hpc-c1/hpc-gpu to report responding (up to 20s) ==="
-for i in $(seq 1 4); do
+for _ in $(seq 1 4); do
   states=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 \
     "$SSH_USER@$HOST" "sinfo -h -N -o '%N %T' -n hpc-c1.beamline,hpc-gpu.beamline" 2>/dev/null || true)
   if [ -n "$states" ] && ! echo "$states" | grep -q '\*'; then
