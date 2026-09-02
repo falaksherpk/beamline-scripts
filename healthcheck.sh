@@ -9,8 +9,9 @@ ssh_vm() {
   ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 -o BatchMode=yes "$SSH_USER@$host" "$@"
 }
 
+FAILURES=0
 pass() { echo "  [OK]   $1"; }
-fail() { echo "  [FAIL] $1"; }
+fail() { echo "  [FAIL] $1"; FAILURES=$((FAILURES + 1)); }
 
 echo "=== GitLab (gitlab.beamline) ==="
 if curl -sf http://gitlab.beamline/-/health >/dev/null 2>&1; then pass "web UI health endpoint"; else fail "web UI health endpoint"; fi
@@ -75,3 +76,8 @@ if ssh_vm pkg.beamline "systemctl is-active --quiet beamline-healthcheck.timer" 
 
 echo ""
 echo "=== Done ==="
+if [ "$FAILURES" -gt 0 ]; then
+  echo "$FAILURES check(s) failed"
+  exit 1
+fi
+exit 0

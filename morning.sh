@@ -28,11 +28,13 @@ echo "=== Logging this run to $LOG_FILE ==="
 # --- Argument parsing: --only=<group,host,...> / --skip=<group,host,...> ---
 ONLY=""
 SKIP=""
+WITH_HEALTHCHECK=false
 for arg in "$@"; do
   case "$arg" in
     --only=*) ONLY="${arg#--only=}" ;;
     --skip=*) SKIP="${arg#--skip=}" ;;
-    *) echo "Unknown argument: $arg (supported: --only=<list>, --skip=<list>)" >&2; exit 1 ;;
+    --with-healthcheck) WITH_HEALTHCHECK=true ;;
+    *) echo "Unknown argument: $arg (supported: --only=<list>, --skip=<list>, --with-healthcheck)" >&2; exit 1 ;;
   esac
 done
 if [[ -n "$ONLY" && -n "$SKIP" ]]; then
@@ -176,8 +178,19 @@ done
 echo ""
 echo "=== Summary ==="
 echo "Ready (${#READY_HOSTS[@]}/${#FLEET_HOSTS[@]}): ${READY_HOSTS[*]:-none}"
+EXIT_CODE=0
 if [ "${#NOT_READY_HOSTS[@]}" -gt 0 ]; then
   echo "NOT ready (${#NOT_READY_HOSTS[@]}/${#FLEET_HOSTS[@]}): ${NOT_READY_HOSTS[*]}"
-  exit 1
+  EXIT_CODE=1
 fi
-exit 0
+
+if [ "$WITH_HEALTHCHECK" = true ]; then
+  echo ""
+  echo "=== Running healthcheck.sh (--with-healthcheck given) ==="
+  if ! "$(dirname "${BASH_SOURCE[0]}")/healthcheck.sh"; then
+    echo "WARNING: healthcheck.sh reported one or more failures (see above)"
+    EXIT_CODE=1
+  fi
+fi
+
+exit "$EXIT_CODE"
