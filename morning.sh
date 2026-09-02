@@ -81,25 +81,66 @@ for vm in "${FLEET_HOSTS[@]}"; do
 done
 
 echo ""
-echo "=== Waiting for each host's SSH to come up (up to 4 min per host) ==="
+echo "=== Waiting for each host's SSH to come up (up to 4 min per host, in parallel) ==="
 wait_for_ssh() {
+  # Disable the inherited EXIT trap inside this backgrounded subshell --
+  # without this, the FIRST background job to finish fires the parent's
+  # "rm -rf $SSH_RESULT_DIR" trap early (traps are inherited by subshells),
+  # deleting the shared result directory out from under every other host
+  # still running, and silently truncating the rest of the parent script.
+  # Found by actually running this: the log file cut off mid-run with no
+  # error, right after the first "echo not_ready"/"echo ready" + rm -rf.
+  trap - EXIT
+
   local host=$1
+  local result_file=$2
   for i in $(seq 1 48); do
     if ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 \
          -o BatchMode=yes "$SSH_USER@$host" true 2>/dev/null; then
+      echo "ready" > "$result_file"
       return 0
     fi
     sleep 5
   done
+  echo "not_ready" > "$result_file"
   return 1
 }
 
+SSH_RESULT_DIR=$(mktemp -d)
+trap 'rm -rf "$SSH_RESULT_DIR"' EXIT
+
+SSH_WAIT_PIDS=()
 for host in "${FLEET_HOSTS[@]}"; do
-  echo -n "$host: waiting... "
-  if wait_for_ssh "$host"; then
-    echo "ready"
+  wait_for_ssh "$host" "$SSH_RESULT_DIR/$host" &
+  SSH_WAIT_PIDS+=($!)
+done
+# Wait only on the specific SSH-check PIDs -- NOT a bare `wait`, which would
+# also block on the tee subshell from the exec > >(tee ...) logging redirect
+# above, since that subshell is technically a background job too and never
+# exits on its own (only when the script's own stdout closes at script exit,
+# which can't happen while wait is still blocking on it -- a real deadlock,
+# found by actually running this).
+for pid in "${SSH_WAIT_PIDS[@]}"; do
+  # || true: we only need this to block until the job finishes, not its
+  # exit status (already captured via the per-host result file below) --
+  # under set -e, a bare `wait $pid` on a failed background job would
+  # otherwise kill the whole script silently the instant the FIRST failing
+  # host's wait call returns. Found by actually running this: the script
+  # died with no error, right after the SSH-wait section, at exactly the
+  # timeout of the one genuinely failing host.
+  wait "$pid" || true
+done
+
+READY_HOSTS=()
+NOT_READY_HOSTS=()
+for host in "${FLEET_HOSTS[@]}"; do
+  result=$(cat "$SSH_RESULT_DIR/$host" 2>/dev/null || echo "not_ready")
+  if [ "$result" = "ready" ]; then
+    echo "$host: ready"
+    READY_HOSTS+=("$host")
   else
-    echo "NOT READY after 4 min — investigate this host separately"
+    echo "$host: NOT READY after 4 min — investigate this host separately"
+    NOT_READY_HOSTS+=("$host")
   fi
 done
 
@@ -130,3 +171,12 @@ for host in "${FLEET_HOSTS[@]}"; do
       echo "WARNING: post-boot hook for $host exited non-zero (non-fatal, continuing)"
   fi
 done
+
+echo ""
+echo "=== Summary ==="
+echo "Ready (${#READY_HOSTS[@]}/${#FLEET_HOSTS[@]}): ${READY_HOSTS[*]:-none}"
+if [ "${#NOT_READY_HOSTS[@]}" -gt 0 ]; then
+  echo "NOT ready (${#NOT_READY_HOSTS[@]}/${#FLEET_HOSTS[@]}): ${NOT_READY_HOSTS[*]}"
+  exit 1
+fi
+exit 0
