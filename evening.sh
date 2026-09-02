@@ -15,6 +15,15 @@ if ! flock -n 200; then
   exit 1
 fi
 
+# Persistent, timestamped log of this run -- terminal output is
+# unchanged (everything is still shown live via tee), but a copy
+# also lands here for later review, independent of scrollback.
+LOG_DIR="$(dirname "${BASH_SOURCE[0]}")/logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/$(basename "$0" .sh)-$(date +%Y%m%d-%H%M%S).log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "=== Logging this run to $LOG_FILE ==="
+
 FORCE=false
 ONLY=""
 SKIP=""
