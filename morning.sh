@@ -29,12 +29,14 @@ echo "=== Logging this run to $LOG_FILE ==="
 ONLY=""
 SKIP=""
 WITH_HEALTHCHECK=false
+DRY_RUN=false
 for arg in "$@"; do
   case "$arg" in
     --only=*) ONLY="${arg#--only=}" ;;
     --skip=*) SKIP="${arg#--skip=}" ;;
     --with-healthcheck) WITH_HEALTHCHECK=true ;;
-    *) echo "Unknown argument: $arg (supported: --only=<list>, --skip=<list>, --with-healthcheck)" >&2; exit 1 ;;
+    --dry-run) DRY_RUN=true ;;
+    *) echo "Unknown argument: $arg (supported: --only=<list>, --skip=<list>, --with-healthcheck, --dry-run)" >&2; exit 1 ;;
   esac
 done
 if [[ -n "$ONLY" && -n "$SKIP" ]]; then
@@ -81,15 +83,26 @@ echo "=== Starting selected beamline VMs (staggered, 10s apart) ==="
 for vm in "${FLEET_HOSTS[@]}"; do
   state=$(virsh domstate "$vm" 2>/dev/null || echo "unknown")
   if [ "$state" = "shut off" ]; then
-    echo "Starting $vm..."
-    virsh start "$vm"
-    sleep 5
+    if [ "$DRY_RUN" = true ]; then
+      echo "[DRY RUN] would start $vm"
+    else
+      echo "Starting $vm..."
+      virsh start "$vm"
+      sleep 5
+    fi
   elif [ "$state" = "unknown" ]; then
     echo "WARNING: $vm not found by virsh domstate -- check hostname/domain name match"
   else
     echo "$vm already $state, skipping"
   fi
 done
+
+if [ "$DRY_RUN" = true ]; then
+  echo ""
+  echo "=== DRY RUN: skipping SSH-readiness wait, interface checks, hooks, and healthcheck ==="
+  echo "=== DRY RUN complete -- no actions were taken ==="
+  exit 0
+fi
 
 echo ""
 echo "=== Waiting for each host's SSH to come up (up to 4 min per host, in parallel) ==="

@@ -28,12 +28,14 @@ echo "=== Logging this run to $LOG_FILE ==="
 FORCE=false
 ONLY=""
 SKIP=""
+DRY_RUN=false
 for arg in "$@"; do
   case "$arg" in
     --force) FORCE=true ;;
     --only=*) ONLY="${arg#--only=}" ;;
     --skip=*) SKIP="${arg#--skip=}" ;;
-    *) echo "Unknown argument: $arg (supported: --force, --only=<list>, --skip=<list>)" >&2; exit 1 ;;
+    --dry-run) DRY_RUN=true ;;
+    *) echo "Unknown argument: $arg (supported: --force, --only=<list>, --skip=<list>, --dry-run)" >&2; exit 1 ;;
   esac
 done
 if [[ -n "$ONLY" && -n "$SKIP" ]]; then
@@ -80,13 +82,24 @@ echo "=== Pre-shutdown hooks ==="
 for host in "${FLEET_HOSTS[@]}"; do
   hook="$(dirname "${BASH_SOURCE[0]}")/hooks/${host}.pre-shutdown.sh"
   if [ -x "$hook" ]; then
-    echo "--- running pre-shutdown hook for $host ---"
-    if ! SSH_KEY="$SSH_KEY" SSH_USER="$SSH_USER" FORCE="$FORCE" "$hook"; then
-      echo "ABORTING: pre-shutdown hook for $host exited non-zero"
-      exit 1
+    if [ "$DRY_RUN" = true ]; then
+      echo "[DRY RUN] would run pre-shutdown hook for $host (not executed -- may have real side effects)"
+    else
+      echo "--- running pre-shutdown hook for $host ---"
+      if ! SSH_KEY="$SSH_KEY" SSH_USER="$SSH_USER" FORCE="$FORCE" "$hook"; then
+        echo "ABORTING: pre-shutdown hook for $host exited non-zero"
+        exit 1
+      fi
     fi
   fi
 done
+
+if [ "$DRY_RUN" = true ]; then
+  echo ""
+  echo "=== DRY RUN: skipping VM shutdown, power-off wait, and force-stop ==="
+  echo "=== DRY RUN complete -- no actions were taken ==="
+  exit 0
+fi
 
 echo ""
 echo "=== Requesting graceful ACPI shutdown for selected beamline VMs (staggered, 10s apart) ==="
