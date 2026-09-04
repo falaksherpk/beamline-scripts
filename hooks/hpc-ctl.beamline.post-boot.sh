@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Called by morning.sh, once, only if hpc-ctl.beamline is in this run's scope.
+# Called by fleet-up.sh, once, only if hpc-ctl.beamline is in this run's scope.
 # Resumes SLURM compute nodes after a VM reboot marks them DOWN.
 #
-# Non-fatal by design: morning.sh continues regardless of this hook's exit
+# Non-fatal by design: fleet-up.sh continues regardless of this hook's exit
 # code -- a SLURM hiccup shouldn't block the rest of the fleet boot.
 
 HOST="hpc-ctl.beamline"

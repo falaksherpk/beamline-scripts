@@ -8,7 +8,7 @@ source fleet.conf
 
 # Prevent two instances of this script running concurrently against
 # the same fleet -- a stray cron job overlapping a manual run, or two
-# people running morning.sh/evening.sh at once, could otherwise race.
+# people running fleet-up.sh/fleet-down.sh at once, could otherwise race.
 LOCKFILE="/tmp/beamline-scripts-$(basename "$0").lock"
 exec 200>"$LOCKFILE"
 if ! flock -n 200; then
@@ -207,9 +207,9 @@ fi
 
 if [ "$WITH_HEALTHCHECK" = true ]; then
   echo ""
-  echo "=== Running healthcheck.sh (--with-healthcheck given) ==="
-  if ! "$(dirname "${BASH_SOURCE[0]}")/healthcheck.sh"; then
-    echo "WARNING: healthcheck.sh reported one or more failures (see above)"
+  echo "=== Running fleet-check.sh (--with-healthcheck given) ==="
+  if ! "$(dirname "${BASH_SOURCE[0]}")/fleet-check.sh"; then
+    echo "WARNING: fleet-check.sh reported one or more failures (see above)"
     EXIT_CODE=1
   fi
 fi

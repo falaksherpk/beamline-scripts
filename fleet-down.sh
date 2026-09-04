@@ -8,7 +8,7 @@ source fleet.conf
 
 # Prevent two instances of this script running concurrently against
 # the same fleet -- a stray cron job overlapping a manual run, or two
-# people running morning.sh/evening.sh at once, could otherwise race.
+# people running fleet-up.sh/fleet-down.sh at once, could otherwise race.
 LOCKFILE="/tmp/beamline-scripts-$(basename "$0").lock"
 exec 200>"$LOCKFILE"
 if ! flock -n 200; then
@@ -52,7 +52,7 @@ expand_list() {
     elif [[ "$item" != *.* ]] && all_fleet_hosts | grep -qx "${item}.beamline"; then
       # Bare short name (e.g. "admin", "pkg") that isn't a group name but
       # matches a real host once .beamline is appended -- same fix as
-      # morning.sh, found the same way (--only=admin silently treated as
+      # fleet-up.sh, found the same way (--only=admin silently treated as
       # an unresolvable literal hostname instead of admin.beamline).
       hosts="$hosts ${item}.beamline"
     else
@@ -75,7 +75,7 @@ echo "=== Target hosts for this run: ${FLEET_HOSTS[*]} ==="
 echo ""
 
 # --- Pre-shutdown hooks: run hooks/<host>.pre-shutdown.sh for each host in
-# scope, if it exists, BEFORE any VM shutdown. Unlike morning.sh's post-boot
+# scope, if it exists, BEFORE any VM shutdown. Unlike fleet-up.sh's post-boot
 # hooks, a nonzero exit here ABORTS the whole run -- this is where a hook
 # gets to say "not safe to proceed" (e.g. today: SLURM jobs still running).
 echo "=== Pre-shutdown hooks ==="
