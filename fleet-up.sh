@@ -1,6 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+print_usage() {
+  cat <<'USAGE'
+Usage: fleet-up.sh [--only=<list>] [--skip=<list>] [--with-healthcheck] [--dry-run]
+
+Start the beamline VM fleet (or a subset), wait for each host's SSH to
+come up, run per-host checks, and optionally chain into fleet-check.sh.
+
+Options:
+  --only=<group,host,...>   Only start the listed groups/hosts (comma-separated)
+  --skip=<group,host,...>   Start everything except the listed groups/hosts
+  --with-healthcheck        Run fleet-check.sh after the boot sequence completes
+  --dry-run                 Print what would happen; no VMs are started, no hooks run
+  -h, --help                Show this help message and exit
+
+Examples:
+  fleet-up.sh
+  fleet-up.sh --only=control,gitlab,tango
+  fleet-up.sh --skip=hpc --dry-run
+  fleet-up.sh --with-healthcheck
+
+--only and --skip are mutually exclusive. Group/host names are defined in fleet.conf.
+Exit code: 0 if every targeted host became ready (and, with --with-healthcheck, every
+check passed); 1 otherwise.
+USAGE
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help) print_usage; exit 0 ;;
+  esac
+done
+
 export LIBVIRT_DEFAULT_URI="qemu:///system"
 cd "$(dirname "${BASH_SOURCE[0]}")"
 # shellcheck source=./fleet.conf
@@ -36,7 +68,7 @@ for arg in "$@"; do
     --skip=*) SKIP="${arg#--skip=}" ;;
     --with-healthcheck) WITH_HEALTHCHECK=true ;;
     --dry-run) DRY_RUN=true ;;
-    *) echo "Unknown argument: $arg (supported: --only=<list>, --skip=<list>, --with-healthcheck, --dry-run)" >&2; exit 1 ;;
+    *) echo "Unknown argument: $arg (supported: --only=<list>, --skip=<list>, --with-healthcheck, --dry-run, --help)" >&2; exit 1 ;;
   esac
 done
 if [[ -n "$ONLY" && -n "$SKIP" ]]; then

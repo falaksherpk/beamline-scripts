@@ -1,6 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+print_usage() {
+  cat <<'USAGE'
+Usage: fleet-down.sh [--only=<list>] [--skip=<list>] [--force] [--dry-run]
+
+Gracefully shut down the beamline VM fleet (or a subset): run pre-shutdown
+hooks, request ACPI shutdown, wait for clean power-off, then force-stop
+anything still running.
+
+Options:
+  --only=<group,host,...>   Only stop the listed groups/hosts (comma-separated)
+  --skip=<group,host,...>   Stop everything except the listed groups/hosts
+  --force                   Proceed even if a pre-shutdown hook reports it's unsafe
+  --dry-run                 Print what would happen, including which pre-shutdown
+                             hooks would run; no hooks are executed, no VMs touched
+  -h, --help                Show this help message and exit
+
+Examples:
+  fleet-down.sh
+  fleet-down.sh --only=hpc
+  fleet-down.sh --force
+
+--only and --skip are mutually exclusive. Group/host names are defined in fleet.conf.
+A pre-shutdown hook can abort the entire run unless --force is given.
+USAGE
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help) print_usage; exit 0 ;;
+  esac
+done
+
 export LIBVIRT_DEFAULT_URI="qemu:///system"
 cd "$(dirname "${BASH_SOURCE[0]}")"
 # shellcheck source=./fleet.conf
@@ -35,7 +67,7 @@ for arg in "$@"; do
     --only=*) ONLY="${arg#--only=}" ;;
     --skip=*) SKIP="${arg#--skip=}" ;;
     --dry-run) DRY_RUN=true ;;
-    *) echo "Unknown argument: $arg (supported: --force, --only=<list>, --skip=<list>, --dry-run)" >&2; exit 1 ;;
+    *) echo "Unknown argument: $arg (supported: --force, --only=<list>, --skip=<list>, --dry-run, --help)" >&2; exit 1 ;;
   esac
 done
 if [[ -n "$ONLY" && -n "$SKIP" ]]; then

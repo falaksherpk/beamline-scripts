@@ -1,5 +1,29 @@
 #!/usr/bin/env bash
 set -uo pipefail
+
+print_usage() {
+  cat <<'USAGE'
+Usage: fleet-check.sh
+
+Run a multi-domain health check across the beamline platform: GitLab
+(web UI, registry, runner), Ansible configuration drift, Kubernetes
+node/pod health, Argo CD app sync status, Podman, package mirrors, and
+the Prometheus/Grafana/Alertmanager observability stack.
+
+Options:
+  -h, --help    Show this help message and exit
+
+Takes no other arguments. Prints a [OK]/[FAIL] line per check.
+Exit code: 0 if every check passed, 1 if any check failed.
+USAGE
+}
+
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help) print_usage; exit 0 ;;
+  esac
+done
+
 # shellcheck source=./fleet.conf
 source "$(dirname "${BASH_SOURCE[0]}")/fleet.conf"
 export LIBVIRT_DEFAULT_URI="qemu:///system"
