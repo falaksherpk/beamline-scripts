@@ -74,6 +74,7 @@ if [[ $FLEET_DRY_RUN == true ]]; then
 fi
 
 STOPPED_AT=""
+declare -A REQUESTED_AT=()
 for (( t = ${#FLEET_TIERS[@]} - 1; t >= 0; t-- )); do
   mapfile -t tier_hosts < <(fleet_tier_selected "$t")
   if (( ${#tier_hosts[@]} == 0 )); then continue; fi
@@ -88,6 +89,7 @@ for (( t = ${#FLEET_TIERS[@]} - 1; t >= 0; t-- )); do
     fi
     if (( ${#waiting[@]} > 0 )); then sleep "$FLEET_SHUTDOWN_STAGGER"; fi
     if out=$(virsh shutdown --mode acpi "$h" 2>&1); then
+      REQUESTED_AT[$h]=$SECONDS
       fleet_info "$h: shutdown requested (was $state)"; waiting+=("$h")
     else
       fleet_error "$h: virsh shutdown failed: $out"; FAILURES+=("$h: virsh shutdown failed")
@@ -98,11 +100,20 @@ for (( t = ${#FLEET_TIERS[@]} - 1; t >= 0; t-- )); do
   fleet_info "waiting up to ${FLEET_SHUTDOWN_TIMEOUT}s for: ${waiting[*]}"
   start=$SECONDS
   deadline=$(( SECONDS + FLEET_SHUTDOWN_TIMEOUT ))
+  # Each host's own time to "shut off" (from its request; accurate to
+  # FLEET_POLL_INTERVAL), so a tier nearing its timeout names the slow VM.
+  declare -A seen_off=()
   while :; do
     remaining=()
     for h in "${waiting[@]}"; do
       state=$(fleet_domstate "$h") || state="unknown"
-      if [[ $state == "shut off" ]]; then continue; fi
+      if [[ $state == "shut off" ]]; then
+        if [[ ! -v seen_off[$h] ]]; then
+          seen_off[$h]=1
+          fleet_info "$h: shut off $(( SECONDS - REQUESTED_AT[$h] ))s after request"
+        fi
+        continue
+      fi
       remaining+=("$h")
     done
     if (( ${#remaining[@]} == 0 || SECONDS >= deadline )); then break; fi
@@ -111,6 +122,7 @@ for (( t = ${#FLEET_TIERS[@]} - 1; t >= 0; t-- )); do
   for h in "${waiting[@]}"; do
     if [[ ! " ${remaining[*]} " == *" $h "* ]]; then CLEAN+=("$h"); fi
   done
+  unset seen_off
   if (( ${#remaining[@]} == 0 )); then
     fleet_info "tier $((t + 1)): all shut off after $(( SECONDS - start ))s"
     continue

@@ -54,16 +54,24 @@ FAILURES=()
 STARTED=()
 ALREADY_RUNNING=()
 READY=()
+declare -A STARTED_AT=()
 
 # Background job: poll SSH until it answers or the deadline passes.
+# STARTED is the SECONDS value at this host's "virsh start" (empty if it
+# was already running), so the time reported is the host's own boot time,
+# not the time since the tier's last VM was started.
 # On timeout, print ssh's last error: "no SSH" alone would hide a host-key
 # mismatch (StrictHostKeyChecking=yes) behind what looks like a slow boot.
 wait_for_ssh() {
-  local h=$1 start=$SECONDS err=""
+  local h=$1 started=$2 err=""
   local deadline=$(( SECONDS + FLEET_SSH_WAIT_TIMEOUT ))
   while (( SECONDS < deadline )); do
     if err=$(fleet_ssh "$h" true 2>&1); then
-      fleet_info "$h: SSH ready after $(( SECONDS - start ))s"
+      if [[ -n $started ]]; then
+        fleet_info "$h: SSH ready $(( SECONDS - started ))s after start"
+      else
+        fleet_info "$h: SSH ready (was already running)"
+      fi
       return 0
     fi
     sleep "$FLEET_POLL_INTERVAL"
@@ -118,6 +126,9 @@ for t in "${!FLEET_TIERS[@]}"; do
   fleet_section "Tier $((t + 1)): start, ${FLEET_START_STAGGER}s apart"
   to_wait=()
   started_here=0
+  # Each host's SSH wait starts right after its own "virsh start", so it
+  # probes during the stagger and reports that host's real boot time.
+  declare -A pids=()
   for h in "${tier_hosts[@]}"; do
     if ! state=$(fleet_domstate "$h"); then
       fleet_error "$h: virsh domstate failed"; FAILURES+=("$h: virsh domstate failed"); continue
@@ -127,25 +138,25 @@ for t in "${!FLEET_TIERS[@]}"; do
         if [[ $FLEET_DRY_RUN == true ]]; then fleet_info "[DRY RUN] would start $h"; continue; fi
         if (( started_here > 0 )); then sleep "$FLEET_START_STAGGER"; fi
         if out=$(virsh start "$h" 2>&1); then
+          STARTED_AT[$h]=$SECONDS
           fleet_info "$h: started"; STARTED+=("$h"); to_wait+=("$h"); started_here=$(( started_here + 1 ))
+          wait_for_ssh "$h" "${STARTED_AT[$h]}" &
+          pids[$h]=$!
         else
           fleet_error "$h: virsh start failed: $out"; FAILURES+=("$h: virsh start failed")
         fi ;;
       running)
-        fleet_info "$h: already running"; ALREADY_RUNNING+=("$h"); to_wait+=("$h") ;;
+        fleet_info "$h: already running"; ALREADY_RUNNING+=("$h"); to_wait+=("$h")
+        wait_for_ssh "$h" "" &
+        pids[$h]=$! ;;
       *)
         fleet_error "$h: state '$state' -- not starting it; resolve by hand"
         FAILURES+=("$h: unexpected state '$state'") ;;
     esac
   done
-  if [[ $FLEET_DRY_RUN == true || ${#to_wait[@]} -eq 0 ]]; then continue; fi
+  if [[ $FLEET_DRY_RUN == true || ${#to_wait[@]} -eq 0 ]]; then unset pids; continue; fi
 
   fleet_info "waiting up to ${FLEET_SSH_WAIT_TIMEOUT}s per host for SSH: ${to_wait[*]}"
-  declare -A pids=()
-  for h in "${to_wait[@]}"; do
-    wait_for_ssh "$h" &
-    pids[$h]=$!
-  done
   # Wait on these PIDs only: a bare "wait" would also wait for the tee
   # process that copies output to the log, which never exits on its own.
   for h in "${to_wait[@]}"; do
