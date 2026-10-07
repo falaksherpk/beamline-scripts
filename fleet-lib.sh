@@ -53,9 +53,15 @@ fleet_validate_config() {
   done
   for v in FLEET_START_STAGGER FLEET_SHUTDOWN_STAGGER FLEET_SSH_WAIT_TIMEOUT \
            FLEET_SHUTDOWN_TIMEOUT FLEET_HOOK_TIMEOUT FLEET_POLL_INTERVAL \
-           FLEET_SSH_CONNECT_TIMEOUT; do
+           FLEET_SSH_CONNECT_TIMEOUT FLEET_CHECK_TIMEOUT FLEET_SLOW_CHECK_TIMEOUT; do
     if [[ ! ${!v:-} =~ ^[0-9]+$ ]]; then
       fleet_error "fleet.conf: $v='${!v:-}' is not a whole number of seconds"; bad=1
+    fi
+  done
+  read -ra hosts <<< "${FLEET_DRIFT_EXCLUDE:-}"
+  for h in "${hosts[@]}"; do
+    if [[ ! -v FLEET_GROUPS[$h] && ! -v FLEET_CHILDREN[$h] ]]; then
+      fleet_error "fleet.conf: FLEET_DRIFT_EXCLUDE names unknown group '$h'"; bad=1
     fi
   done
   case "$FLEET_SSH_HOST_KEY_CHECKING" in
@@ -260,6 +266,23 @@ fleet_run_hooks() {
   elif [[ $dry_run != true ]]; then
     fleet_info "$phase hooks: $found found, ${#FLEET_HOOK_FAILED[@]} failed"
   fi
+}
+
+# --- Checks (contract: checks.d/README.md) -----------------------------------
+# A check script reports each finding with one of the first three and ends
+# with fleet_check_exit: 1 if anything failed, else 2 if anything could not
+# be checked, else 0.
+FLEET_CHECK_N_OK=0 FLEET_CHECK_N_FAIL=0 FLEET_CHECK_N_CANNOT=0
+fleet_check_ok()     { printf '  [OK]     %s\n' "$*"; FLEET_CHECK_N_OK=$(( FLEET_CHECK_N_OK + 1 )); }
+fleet_check_fail()   { printf '  [FAIL]   %s\n' "$*"; FLEET_CHECK_N_FAIL=$(( FLEET_CHECK_N_FAIL + 1 )); }
+fleet_check_cannot() { printf '  [CANNOT] %s\n' "$*"; FLEET_CHECK_N_CANNOT=$(( FLEET_CHECK_N_CANNOT + 1 )); }
+fleet_check_exit() {
+  if (( FLEET_CHECK_N_FAIL > 0 )); then exit 1; fi
+  if (( FLEET_CHECK_N_CANNOT > 0 )); then exit 2; fi
+  if (( FLEET_CHECK_N_OK == 0 )); then
+    printf '  [CANNOT] %s\n' "check reported nothing"; exit 2
+  fi
+  exit 0
 }
 
 # --- Arguments --------------------------------------------------------------

@@ -1,107 +1,85 @@
 #!/usr/bin/env bash
-set -uo pipefail
+# fleet-check.sh -- run the health checks in checks.d/ and summarise them.
+set -euo pipefail
+# shellcheck source=./fleet-lib.sh
+source "$(dirname -- "$(realpath -- "${BASH_SOURCE[0]}")")/fleet-lib.sh"
 
-print_usage() {
-  cat <<'USAGE'
-Usage: fleet-check.sh
+CHECKS_DIR=${FLEET_CHECKS_DIR:-$FLEET_DIR/checks.d}
 
-Run a multi-domain health check across the beamline platform: GitLab
-(web UI, registry, runner), Ansible configuration drift, Kubernetes
-node/pod health, Argo CD app sync status, Podman, package mirrors, and
-the Prometheus/Grafana/Alertmanager observability stack.
+usage() {
+  cat << USAGE
+Usage: fleet-check.sh [--slow]
+
+Run every executable checks.d/*.sh in name order, each under timeout
+(${FLEET_CHECK_TIMEOUT}s; ${FLEET_SLOW_CHECK_TIMEOUT}s for *.slow.sh), and summarise. Read-only: changes nothing.
 
 Options:
-  -h, --help    Show this help message and exit
+  --slow       Also run the slow checks (*.slow.sh, e.g. Ansible drift)
+  -h, --help   Show this help
 
-Takes no other arguments. Prints a [OK]/[FAIL] line per check.
-Exit code: 0 if every check passed, 1 if any check failed.
+A check exits 0 OK, 1 FAIL, 2 could not check, 3 skipped (contract:
+checks.d/README.md). A non-executable check is disabled and listed as such.
+
+Exit codes: 0 no check failed or was unable to check; 1 otherwise;
+            2 usage or configuration error.
 USAGE
 }
 
+SLOW=false
 for arg in "$@"; do
-  case "$arg" in
-    -h|--help) print_usage; exit 0 ;;
+  case $arg in
+    --slow)    SLOW=true ;;
+    -h|--help) usage; exit "$FLEET_EXIT_OK" ;;
+    *) fleet_error "unknown argument: $arg (see --help)"; exit "$FLEET_EXIT_USAGE" ;;
+  esac
+done
+if [[ ! -d $CHECKS_DIR ]]; then
+  fleet_error "no checks directory: $CHECKS_DIR"; exit "$FLEET_EXIT_USAGE"
+fi
+
+declare -A RESULT=()
+NAMES=()
+shopt -s nullglob
+for check in "$CHECKS_DIR"/*.sh; do
+  name=$(basename "$check" .sh)
+  NAMES+=("$name")
+  if [[ ! -x $check ]]; then
+    RESULT[$name]="disabled (not executable)"; continue
+  fi
+  limit=$FLEET_CHECK_TIMEOUT
+  if [[ $name == *.slow ]]; then
+    if [[ $SLOW != true ]]; then RESULT[$name]="skipped (slow; use --slow)"; continue; fi
+    limit=$FLEET_SLOW_CHECK_TIMEOUT
+  fi
+  fleet_section "$name (timeout ${limit}s)"
+  start=$SECONDS
+  rc=0
+  timeout -k 5 "$limit" "$check" || rc=$?
+  took=$(( SECONDS - start ))
+  case $rc in
+    0)   RESULT[$name]="OK (${took}s)" ;;
+    1)   RESULT[$name]="FAIL (${took}s)" ;;
+    2)   RESULT[$name]="COULD NOT CHECK (${took}s)" ;;
+    3)   RESULT[$name]="skipped by the check (${took}s)" ;;
+    124) RESULT[$name]="COULD NOT CHECK: timed out after ${limit}s"
+         printf '  [CANNOT] timed out after %ss\n' "$limit" ;;
+    *)   RESULT[$name]="COULD NOT CHECK: exit $rc (${took}s)" ;;
   esac
 done
 
-# shellcheck source=./fleet.conf
-source "$(dirname "${BASH_SOURCE[0]}")/fleet.conf"
-export LIBVIRT_DEFAULT_URI="qemu:///system"
-
-ssh_vm() {
-  local host="$1"; shift
-  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 -o BatchMode=yes "$SSH_USER@$host" "$@"
-}
-
-FAILURES=0
-pass() { echo "  [OK]   $1"; }
-fail() { echo "  [FAIL] $1"; FAILURES=$((FAILURES + 1)); }
-
-echo "=== GitLab (gitlab.beamline) ==="
-if curl -sf http://gitlab.beamline/-/health >/dev/null 2>&1; then pass "web UI health endpoint"; else fail "web UI health endpoint"; fi
-if curl -sf http://gitlab.beamline:5050/v2/ >/dev/null 2>&1; then pass "container registry"; else fail "container registry (check port)"; fi
-if ssh_vm gitlab.beamline "sudo gitlab-runner status" 2>&1 | grep -qi running; then pass "gitlab-runner"; else fail "gitlab-runner"; fi
-
-echo ""
-echo "=== Ansible drift (from admin.beamline) ==="
-DRIFT=$(ssh_vm admin.beamline "cd ~/lab-ansible && ansible-playbook site.yml --check 2>&1")
-if echo "$DRIFT" | grep -q "failed=0" && echo "$DRIFT" | grep -qE "changed=0"; then
-  pass "no drift detected"
-else
-  fail "drift or failures detected -- review output:"
-  echo "$DRIFT" | tail -20
+if (( ${#NAMES[@]} == 0 )); then
+  fleet_error "no checks in $CHECKS_DIR"; exit "$FLEET_EXIT_FAIL"
 fi
 
-echo ""
-echo "=== Kubernetes cluster (k8cp.beamline) ==="
-if ! NODES=$(ssh_vm k8cp.beamline "kubectl get nodes --no-headers" 2>&1); then
-  fail "could not reach k8cp.beamline via SSH"
-elif echo "$NODES" | grep -qv "Ready" ; then
-  fail "one or more nodes not Ready:"; echo "$NODES"
-else
-  pass "all nodes Ready"
+fleet_section "Summary ($(fleet_elapsed))"
+bad=0
+for name in "${NAMES[@]}"; do
+  printf '  %-28s %s\n' "$name" "${RESULT[$name]}"
+  case ${RESULT[$name]} in FAIL*|COULD\ NOT*) bad=$(( bad + 1 )) ;; esac
+done
+if (( bad > 0 )); then
+  fleet_info "result: $bad check(s) failed or could not check"
+  exit "$FLEET_EXIT_FAIL"
 fi
-if ! BADPODS=$(ssh_vm k8cp.beamline "kubectl get pods -A --no-headers" 2>&1); then
-  fail "could not reach k8cp.beamline via SSH"
-elif echo "$BADPODS" | grep -qvE "Running|Completed"; then
-  fail "pods not Running/Completed:"; echo "$BADPODS" | grep -vE "Running|Completed"
-else
-  pass "all pods healthy"
-fi
-
-echo ""
-echo "=== Argo CD app sync status (k8cp.beamline) ==="
-if ! ARGO=$(ssh_vm k8cp.beamline "kubectl get applications -n argocd -o custom-columns=NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status --no-headers" 2>&1); then
-  fail "could not reach k8cp.beamline via SSH"
-elif echo "$ARGO" | grep -qvE "Synced\s+Healthy"; then
-  fail "app(s) not Synced/Healthy:"; echo "$ARGO"
-else
-  pass "all apps Synced/Healthy"
-fi
-
-echo ""
-echo "=== Podman (pkg.beamline) ==="
-if ssh_vm pkg.beamline "podman info" >/dev/null 2>&1; then pass "podman responsive"; else fail "podman not responsive or host unreachable"; fi
-
-echo ""
-echo "=== pkg.beamline repo servers ==="
-if curl -sf http://pkg.beamline/deb/ >/dev/null 2>&1; then pass "apt (deb) repo server"; else fail "apt (deb) repo server (check path/port)"; fi
-if curl -sf http://pkg.beamline/conda/ >/dev/null 2>&1; then pass "conda channel server"; else fail "conda channel server (check path/port)"; fi
-
-echo ""
-echo "=== Observability stack (obs.beamline) ==="
-if curl -sf http://obs.beamline:9090/-/healthy >/dev/null 2>&1; then pass "Prometheus"; else fail "Prometheus (check port)"; fi
-if curl -sf http://obs.beamline:3000/api/health >/dev/null 2>&1; then pass "Grafana"; else fail "Grafana (check port)"; fi
-if curl -sf http://obs.beamline:9093/-/healthy >/dev/null 2>&1; then pass "Alertmanager"; else fail "Alertmanager (check port)"; fi
-
-echo ""
-echo "=== beamline-healthcheck (Prometheus textfile collector) ==="
-if ssh_vm pkg.beamline "systemctl is-active --quiet beamline-healthcheck.timer" >/dev/null 2>&1; then pass "systemd timer active"; else fail "systemd timer not active or host unreachable"; fi
-
-echo ""
-echo "=== Done ==="
-if [ "$FAILURES" -gt 0 ]; then
-  echo "$FAILURES check(s) failed"
-  exit 1
-fi
-exit 0
+fleet_info "result: OK"
+exit "$FLEET_EXIT_OK"
