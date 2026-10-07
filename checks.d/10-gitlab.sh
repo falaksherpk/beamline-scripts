@@ -9,9 +9,13 @@ HOST=gitlab.beamline
 WEB="https://$HOST/users/sign_in"
 REGISTRY="https://$HOST:5050/v2/"
 
-code=$(curl -sS -o /dev/null --connect-timeout 5 -w '%{http_code}' "$WEB" 2>&1)
-if [[ $code == 200 ]]; then fleet_check_ok "web UI: $WEB -> 200"
-else fleet_check_fail "web UI: $WEB -> ${code:-no answer} (want 200)"; fi
+# curl -s plus -w fields keep curl's own errors apart from the HTTP status
+# (curl >= 7.75 for %{exitcode} and %{errormsg}).
+IFS='|' read -r code cexit cerr < <(curl -s -o /dev/null --connect-timeout 5 \
+  -w '%{http_code}|%{exitcode}|%{errormsg}\n' "$WEB")
+if [[ ${cexit:-x} != 0 ]]; then fleet_check_fail "web UI: $WEB -> no answer (curl exit ${cexit:-?}: ${cerr:-})"
+elif [[ $code == 200 ]]; then fleet_check_ok "web UI: $WEB -> 200"
+else fleet_check_fail "web UI: $WEB -> HTTP $code (want 200)"; fi
 
 rc=0
 ready=$(fleet_ssh "$HOST" "curl -sS --resolve $HOST:443:127.0.0.1 'https://$HOST/-/readiness?all=1'" 2>&1) || rc=$?
@@ -28,12 +32,17 @@ print(d.get("status", "?") + ("" if not bad else " (not ok: " + ", ".join(bad) +
   else fleet_check_fail "readiness (on $HOST): $verdict"; fi
 fi
 
-headers=$(curl -sS -o /dev/null -D - --connect-timeout 5 "$REGISTRY" 2>&1 | tr -d '\r')
+out=$(curl -s -o /dev/null -D - --connect-timeout 5 \
+  -w '__curl|%{exitcode}|%{errormsg}\n' "$REGISTRY" | tr -d '\r')
+IFS='|' read -r _ cexit cerr <<< "$(grep '^__curl|' <<< "$out")"
+headers=$(grep -v '^__curl|' <<< "$out")
 status=$(head -n1 <<< "$headers" | awk '{print $2}')
-if [[ $status == 401 ]] && grep -qi '^docker-distribution-api-version: registry/2.0$' <<< "$headers"; then
+if [[ ${cexit:-x} != 0 ]]; then
+  fleet_check_fail "registry: $REGISTRY -> no answer (curl exit ${cexit:-?}: ${cerr:-})"
+elif [[ $status == 401 ]] && grep -qi '^docker-distribution-api-version: registry/2.0$' <<< "$headers"; then
   fleet_check_ok "registry: $REGISTRY -> 401 + registry/2.0 header (answers, wants auth)"
 else
-  fleet_check_fail "registry: $REGISTRY -> ${status:-no answer}; want 401 with Docker-Distribution-Api-Version: registry/2.0"
+  fleet_check_fail "registry: $REGISTRY -> HTTP ${status:-?}; want 401 with Docker-Distribution-Api-Version: registry/2.0"
 fi
 
 rc=0
