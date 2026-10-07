@@ -62,7 +62,7 @@ wait_for_ssh() {
   local h=$1 start=$SECONDS err=""
   local deadline=$(( SECONDS + FLEET_SSH_WAIT_TIMEOUT ))
   while (( SECONDS < deadline )); do
-    if err=$(fleet_ssh "$h" true < /dev/null 2>&1); then
+    if err=$(fleet_ssh "$h" true 2>&1); then
       fleet_info "$h: SSH ready after $(( SECONDS - start ))s"
       return 0
     fi
@@ -76,7 +76,7 @@ wait_for_ssh() {
 check_host() {
   local h=$1 out rc=0 problems=() line i addr
   local -A facts=()
-  out=$(fleet_ssh "$h" bash -s -- "$FLEET_INTERNET_PROBE" "${IFACES[@]}" <<< "$REMOTE_CHECK" 2>&1) || rc=$?
+  out=$(fleet_ssh_script "$h" bash -s -- "$FLEET_INTERNET_PROBE" "${IFACES[@]}" <<< "$REMOTE_CHECK" 2>&1) || rc=$?
   if (( rc == 255 )); then
     FAILURES+=("$h: check: ssh failed: $out"); fleet_error "$h: ssh failed: $out"; return
   elif (( rc != 0 )); then

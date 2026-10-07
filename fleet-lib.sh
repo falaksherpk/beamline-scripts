@@ -200,18 +200,25 @@ fleet_start_log() {
 }
 
 # --- SSH --------------------------------------------------------------------
-# fleet_ssh HOST COMMAND... -- returns ssh's status unchanged: 255 means ssh
-# itself failed (unreachable, key rejected); anything else is the remote
-# command's status. COMMAND is joined into one string for the remote shell,
-# so quote it for that shell.
+# Both return ssh's status unchanged: 255 means ssh itself failed
+# (unreachable, key rejected); anything else is the remote command's status.
+# COMMAND is joined into one string for the remote shell, so quote it for
+# that shell.
+#
+# fleet_ssh HOST COMMAND...         stdin is /dev/null (ssh -n). Without -n,
+#   ssh reads the caller's stdin and swallows the rest of a "while read"
+#   loop or of a script fed to bash on stdin.
+# fleet_ssh_script HOST COMMAND...  passes stdin to the remote command,
+#   e.g. fleet_ssh_script HOST bash -s -- ARGS <<< "$SCRIPT".
 fleet_ssh() {
   local host=$1
   shift
-  ssh -i "$FLEET_SSH_KEY" \
-      -o BatchMode=yes \
-      -o ConnectTimeout="$FLEET_SSH_CONNECT_TIMEOUT" \
-      -o StrictHostKeyChecking="$FLEET_SSH_HOST_KEY_CHECKING" \
-      -- "$FLEET_SSH_USER@$host" "$@"
+  ssh -n "${FLEET_SSH_OPTS[@]}" -- "$FLEET_SSH_USER@$host" "$@"
+}
+fleet_ssh_script() {
+  local host=$1
+  shift
+  ssh "${FLEET_SSH_OPTS[@]}" -- "$FLEET_SSH_USER@$host" "$@"
 }
 
 # --- Hooks (contract: hooks/README.md) ---------------------------------------
@@ -278,3 +285,9 @@ fleet_parse_args() {
 }
 
 fleet_validate_config || return "$FLEET_EXIT_USAGE"
+FLEET_SSH_OPTS=(
+  -i "$FLEET_SSH_KEY"
+  -o BatchMode=yes
+  -o ConnectTimeout="$FLEET_SSH_CONNECT_TIMEOUT"
+  -o StrictHostKeyChecking="$FLEET_SSH_HOST_KEY_CHECKING"
+)

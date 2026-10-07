@@ -21,6 +21,9 @@ executable files are run. `--dry-run` lists the hooks it would run and runs none
   provides `fleet_ssh <host> <command...>`, which uses the SSH settings from
   `fleet.conf` and returns ssh's status unchanged: 255 means ssh itself failed
   (host unreachable, key rejected); anything else is the remote command's status.
+  Its stdin is `/dev/null` (`ssh -n`), so it is safe inside a `while read`
+  loop. To feed the remote command on stdin, use `fleet_ssh_script` instead
+  (e.g. `fleet_ssh_script <host> bash -s <<< "$script"`).
 - `FLEET_FORCE` -- `true` or `false` (pre-shutdown only: was `--force` given).
 
 ## Exit codes
