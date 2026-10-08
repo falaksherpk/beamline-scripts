@@ -58,10 +58,13 @@ fleet_validate_config() {
       fleet_error "fleet.conf: $v='${!v:-}' is not a whole number of seconds"; bad=1
     fi
   done
-  read -ra hosts <<< "${FLEET_DRIFT_EXCLUDE:-}"
-  for h in "${hosts[@]}"; do
-    if [[ ! -v FLEET_GROUPS[$h] && ! -v FLEET_CHILDREN[$h] ]]; then
-      fleet_error "fleet.conf: FLEET_DRIFT_EXCLUDE names unknown group '$h'"; bad=1
+  # Format only: whether each tag is a play tag of site.yml is checked by the
+  # drift check itself, on admin.beamline, where site.yml lives.
+  local -a skip_tags
+  read -ra skip_tags <<< "${FLEET_DRIFT_SKIP_TAGS:-}"
+  for h in "${skip_tags[@]}"; do
+    if [[ ! $h =~ ^[A-Za-z0-9_]+$ ]]; then
+      fleet_error "fleet.conf: FLEET_DRIFT_SKIP_TAGS has an invalid tag '$h'"; bad=1
     fi
   done
   case "$FLEET_SSH_HOST_KEY_CHECKING" in

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Ansible drift: site.yml --check from admin.beamline, minus the groups in
-# FLEET_DRIFT_EXCLUDE (roles defined but not yet applied by the rebuild).
+# Ansible drift: site.yml --check from admin.beamline on every host, skipping
+# the plays tagged in FLEET_DRIFT_SKIP_TAGS (roles defined but not yet applied
+# by the rebuild). Skipping plays, not hosts, keeps those hosts in common and
+# node_exporter: excluding whole groups once hid real drift there (Ch16).
 set -uo pipefail
 # shellcheck source-path=SCRIPTDIR/..
 # shellcheck source=fleet-lib.sh
@@ -9,16 +11,29 @@ HOST=admin.beamline
 # shellcheck disable=SC2088  # the remote shell expands ~, not this one
 REPO="~/lab-ansible"
 
-limit="all"
-read -ra excluded <<< "${FLEET_DRIFT_EXCLUDE:-}"
-for g in "${excluded[@]}"; do
-  limit+=":!$g"
-  members=$(fleet_resolve_group "$g" | tr '\n' ' ')
-  printf '  [NOTE]   not checked: %s (%s) -- FLEET_DRIFT_EXCLUDE in fleet.conf\n' "$g" "${members% }"
-done
+read -ra skip <<< "${FLEET_DRIFT_SKIP_TAGS:-}"
+skip_csv=$(IFS=,; echo "${skip[*]}")
 
 # LC_ALL: ansible refuses to start over a non-interactive ssh without it.
-run="cd $REPO && LC_ALL=C.UTF-8 ansible-playbook site.yml --limit '$limit'"
+run="cd $REPO && LC_ALL=C.UTF-8 ansible-playbook site.yml"
+if [[ -n $skip_csv ]]; then run+=" --skip-tags '$skip_csv'"; fi
+
+# Every skipped tag must be the tag of a whole play in site.yml: a typo would
+# otherwise skip nothing, and a task-level tag would hide part of a play.
+if (( ${#skip[@]} )); then
+  rc=0
+  tag_listing=$(fleet_ssh "$HOST" "cd $REPO && LC_ALL=C.UTF-8 ansible-playbook site.yml --list-tags" 2>&1) || rc=$?
+  if (( rc != 0 )); then
+    fleet_check_cannot "ansible-playbook --list-tags on $HOST exited $rc: ${tag_listing:0:300}"; fleet_check_exit
+  fi
+  for t in "${skip[@]}"; do
+    play=$(sed -nE "s/^  play #[0-9]+ \(([^)]*)\): (.*[^[:space:]])[[:space:]]+TAGS: \[$t\]\$/\1|\2/p" <<< "$tag_listing")
+    if [[ -z $play ]]; then
+      fleet_check_cannot "FLEET_DRIFT_SKIP_TAGS: '$t' is not the tag of a play in site.yml"; fleet_check_exit
+    fi
+    printf '  [NOTE]   not checked: play "%s" (hosts: %s) -- tag %s in FLEET_DRIFT_SKIP_TAGS, fleet.conf\n' "${play#*|}" "${play%%|*}" "$t"
+  done
+fi
 
 # The plays site.yml contains (read without connecting to any host).
 rc=0
@@ -70,7 +85,8 @@ while read -r host _ fields; do
 done <<< "$recap"
 
 # Name the tasks behind any change or failure.
-tasks=$(awk '/^TASK \[/ {t=$0; sub(/^TASK \[/,"",t); sub(/\] \**$/,"",t)}
+# Handlers count in the recap too: name them as handlers, not under the last task.
+tasks=$(awk '/^(TASK|RUNNING HANDLER) \[/ {t=$0; hd=($0 ~ /^RUNNING HANDLER/); sub(/^(TASK|RUNNING HANDLER) \[/,"",t); sub(/\] \**$/,"",t); if (hd) t="handler " t}
              /^(changed|failed|fatal):/ {split($2,h,"]"); gsub(/\[/,"",h[1]); print "    " $1 " " t " -> " h[1]}' <<< "$out" | sort -u)
 if [[ -n $tasks ]]; then printf '  tasks behind the findings:\n%s\n' "$tasks"; fi
 
