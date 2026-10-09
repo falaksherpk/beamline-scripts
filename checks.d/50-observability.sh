@@ -32,6 +32,14 @@ fleet = sys.argv[2:]
 P = "http://127.0.0.1:9090"
 AM = "http://127.0.0.1:9093"
 
+# Jobs and target counts that role prometheus configures (beamline-ansible,
+# templates/prometheus.yml.j2); keep the two in step. Job node: one per fleet host.
+EXPECTED_JOBS = {
+    "prometheus": 1, "alertmanager": 1,
+    "gitlab-rails": 1, "gitlab-workhorse": 1, "gitlab-gitaly": 1,
+    "kube-state-metrics": 1, "kubelet": 3, "cadvisor": 3,
+}
+
 
 def say(kind, msg):
     print(f"{kind}|{msg}", flush=True)
@@ -112,6 +120,17 @@ def targets():
         say("FAIL", f"targets: fleet hosts missing from job node: {', '.join(missing)}")
     else:
         say("OK", f"targets: all {len(fleet)} fleet hosts in job node")
+    # A job that vanishes from prometheus.yml, or loses a target, would leave every
+    # line above green: compare with what role prometheus configures.
+    want = dict(EXPECTED_JOBS, node=len(fleet))
+    wrong = [f"{j} {len(jobs.get(j, []))} (want {n})" for j, n in sorted(want.items())
+             if len(jobs.get(j, [])) != n]
+    extra = sorted(set(jobs) - set(want))
+    also = f"; also scraped, not in this check's list: {', '.join(extra)}" if extra else ""
+    if wrong:
+        say("FAIL", f"targets: expected jobs/target counts differ: {'; '.join(wrong)}{also}")
+    else:
+        say("OK", f"targets: all {len(want)} expected jobs present with their target counts{also}")
 
 
 def alert_path():
