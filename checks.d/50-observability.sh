@@ -2,7 +2,8 @@
 # Observability on obs.beamline (handbook Ch16): Prometheus (ready, config
 # reload, rules, targets), the alert path (Watchdog in Alertmanager, nothing
 # else firing), beamline-healthcheck fresh and passing on every fleet host,
-# Grafana over verified TLS, and Prometheus/Alertmanager unreachable from here.
+# Grafana over verified TLS, Prometheus/Alertmanager unreachable from here, and
+# GitLab's metrics endpoints (scraped by obs) not served to this host.
 set -uo pipefail
 # shellcheck source-path=SCRIPTDIR/..
 # shellcheck source=fleet-lib.sh
@@ -13,6 +14,11 @@ HOST=${CHECK_OBS_HOST:-obs.beamline}
 GRAFANA="https://$HOST:3000/api/health"
 # Seconds; the health check's timer runs every minute (alert BeamlineHealthcheckStale).
 STALE=300
+# GitLab's metrics (role gitlab, Ch16) are for obs only: Rails /-/metrics through
+# GitLab's monitoring_whitelist, Workhorse/Gitaly through ufw; nginx's status
+# server listens on every address and ufw must drop it too. Overridable only to
+# test the check against a wrong target.
+GITLAB=${CHECK_GITLAB_HOST:-gitlab.beamline}
 
 read -ra hosts <<< "$(fleet_all_hosts | tr '\n' ' ')"
 
@@ -203,5 +209,28 @@ for port in 9090 9093; do
     *) fleet_check_cannot "exposure: $HOST:$port -> curl exit ${cexit:-?}: ${cerr:-}" ;;
   esac
 done
+
+# 4. GitLab's metrics, as seen from here (not obs): the Workhorse, Gitaly and nginx
+#    status ports must not answer, and Rails must refuse /-/metrics with 404.
+for port in 9229 9236 8060; do
+  IFS='|' read -r code cexit cerr < <(curl -s -o /dev/null --connect-timeout 3 --max-time 5 \
+    -w '%{http_code}|%{exitcode}|%{errormsg}\n' "http://$GITLAB:$port/metrics")
+  case ${cexit:-x} in
+    7|28) fleet_check_ok "exposure: $GITLAB:$port does not answer from here (curl exit $cexit)" ;;
+    0) fleet_check_fail "exposure: $GITLAB:$port answered HTTP $code from here; want obs only" ;;
+    *) fleet_check_cannot "exposure: $GITLAB:$port -> curl exit ${cexit:-?}: ${cerr:-}" ;;
+  esac
+done
+IFS='|' read -r code cexit cerr < <(curl -s -o /dev/null --connect-timeout 5 --max-time 10 \
+  -w '%{http_code}|%{exitcode}|%{errormsg}\n' "https://$GITLAB/-/metrics")
+if [[ ${cexit:-x} != 0 ]]; then
+  fleet_check_cannot "exposure: https://$GITLAB/-/metrics -> no answer (curl exit ${cexit:-?}: ${cerr:-})"
+elif [[ $code == 404 ]]; then
+  fleet_check_ok "exposure: https://$GITLAB/-/metrics -> 404 from here (monitoring_whitelist admits obs only)"
+elif [[ $code == 200 ]]; then
+  fleet_check_fail "exposure: https://$GITLAB/-/metrics -> 200 from here; want 404 (obs only)"
+else
+  fleet_check_cannot "exposure: https://$GITLAB/-/metrics -> HTTP $code; want 404"
+fi
 
 fleet_check_exit
