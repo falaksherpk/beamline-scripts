@@ -55,6 +55,12 @@ Each hook runs under `timeout` with `HOOK_TIMEOUT` seconds from `fleet.conf`.
 
 ## History
 
-The `hpc-ctl.beamline` SLURM hooks (job check and drain before shutdown, node
-resume after boot) were removed because SLURM is not installed on the rebuilt
-fleet. To find them: `git log --oneline --diff-filter=D -- hooks/`.
+The first `hpc-ctl.beamline` SLURM hooks were removed in the fleet-script rework:
+their "safe" could not fail and their "could not reach" was false. To find them:
+`git log --oneline --diff-filter=D -- hooks/`. Chapter 18 added new ones that
+follow this contract:
+
+- `hpc-ctl.beamline.pre-shutdown.sh` -- exit 1 while any SLURM job is not purely
+  pending (running, completing, suspended, ...); pending jobs don't block. No drain.
+- `hpc-ctl.beamline.post-boot.sh` -- waits up to 45 s until slurmctld knows
+  exactly the configured nodes, each with only usable state flags; changes nothing.
