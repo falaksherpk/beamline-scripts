@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # SLURM cluster (handbook Ch18), seen from its controller hpc-ctl: munge, MariaDB,
 # slurmdbd and slurmctld running and enabled; the controller answering; exactly the
-# configured compute nodes, each in a usable state; the accounting chain
+# configured compute nodes, each in a usable state and with its configured GRES
+# (Ch20); the accounting chain
 # slurmctld -> slurmdbd -> MariaDB answering. From here: the Slurm ports are not
 # reachable from beamlinehost (only the HPC nodes may connect, Ch18 ufw rules).
 # Read-only: no job is submitted (a job would write accounting records).
@@ -16,6 +17,9 @@ EXPOSURE=${CHECK_SLURM_EXPOSURE:-hpc-ctl.beamline:6817 hpc-ctl.beamline:6819 hpc
 # What beamline-ansible's slurm role configures (Ch18); keep the two in step.
 CLUSTER=beamline
 NODES="hpc-c1 hpc-gpu"
+# Each node's GRES as slurmctld knows it (scontrol --json "gres", without the "(S:...)"
+# affinity AutoDetect adds); empty = none. Keep in step with slurm_gpu_nodes (Ch20).
+GRES="hpc-c1= hpc-gpu=gpu:gtx_750_ti:1"
 UNITS="munge mariadb slurmdbd slurmctld"
 # Node state flags (scontrol --json) that mean "usable"; anything else is a failure.
 GOOD_FLAGS="IDLE MIXED ALLOCATED COMPLETING"
@@ -25,7 +29,7 @@ PROBE_TIMEOUT=3
 # first, quoted by printf %q; the whole program travels base64-encoded, so its
 # quoting does not depend on two shells.
 remote=$( {
-  printf 'cluster=%q nodes=%q units=%q good=%q\n' "$CLUSTER" "$NODES" "$UNITS" "$GOOD_FLAGS"
+  printf 'cluster=%q nodes=%q units=%q good=%q gres=%q\n' "$CLUSTER" "$NODES" "$UNITS" "$GOOD_FLAGS" "$GRES"
   cat << 'SH'
 say() { printf '%s|%s\n' "$1" "$2"; }
 one() { tr '\n' ' ' <<< "$1" | tr -s ' ' | sed 's/ $//' | cut -c1-200; }
@@ -44,15 +48,17 @@ prc=$?
 if [[ $prc == 0 && $p == *"(primary) at "*" is UP"* ]]; then say OK "controller: $(one "$p")"
 else say FAIL "controller: scontrol ping exit $prc: $(one "$p")"; fi
 
-# 3. Exactly the configured nodes, each usable (parsed from JSON, not table text).
+# 3. Exactly the configured nodes, each usable and with its configured GRES (parsed
+#    from JSON, not table text).
 j=$(scontrol show nodes --json < /dev/null 2>&1)
 jrc=$?
 if (( jrc != 0 )); then
   say CANNOT "nodes: scontrol show nodes --json exit $jrc: $(one "${j:0:200}")"
 else
   python3 -c '
-import json, sys
+import json, re, sys
 want, good = sys.argv[1].split(), set(sys.argv[2].split())
+want_gres = dict(t.split("=", 1) for t in sys.argv[3].split())
 allowed = "/".join(sorted(good))
 try:
     d = json.loads(sys.stdin.read())
@@ -77,7 +83,13 @@ for name in want:
         print("OK|node %s: %s" % (name, shown))
     else:
         print("FAIL|node %s: %s, reason \"%s\" (want only %s)" % (name, shown, reason, allowed))
-' "$nodes" "$good" <<< "$j" || say CANNOT "nodes: python3 could not evaluate the node list (exit $?)"
+    have = re.sub(r"\([^)]*\)", "", nodes[name].get("gres") or "")
+    need = want_gres.get(name, "")
+    if have == need:
+        print("OK|gres %s: %s" % (name, have or "none"))
+    else:
+        print("FAIL|gres %s: %s (want %s)" % (name, have or "none", need or "none"))
+' "$nodes" "$good" "$gres" <<< "$j" || say CANNOT "nodes: python3 could not evaluate the node list (exit $?)"
 fi
 
 # 4. Accounting: slurmctld -> slurmdbd -> MariaDB, by asking slurmdbd for the cluster.
