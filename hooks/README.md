@@ -41,7 +41,8 @@ Fail-closed: every non-zero exit is a failure.
 - post-boot: the boot sequence continues; the failure appears in the summary
   and the run exits 1.
 
-Each hook runs under `timeout` with `HOOK_TIMEOUT` seconds from `fleet.conf`.
+Each hook runs under `timeout` with `FLEET_HOOK_TIMEOUT` seconds from
+`fleet.conf`.
 
 ## Rules for writing a hook
 
