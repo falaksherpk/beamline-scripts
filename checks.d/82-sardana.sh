@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Sardana (handbook Part 3, Ch31), seen from tango-ds: the Pool and MacroServer units
 # active and enabled; pool/linac/1, macroserver/linac/1 and door/linac/1 exported from
-# tango-ds, the Pool and MacroServer ON, the Door ON or RUNNING (a scan may be running);
-# the lab's elements on the Pool, each ON or MOVING; the MacroServer knowing every
-# element the Pool has (a MacroServer that doesn't yet answers "does not exist in any
-# Pool", Ch31); ActiveMntGrp set to the lab's measurement group. From here (beamlinehost,
-# on the lab network): each server's fixed CORBA and heartbeat port accepts, the nat0
-# side stays closed. The ZeroMQ event ports are not probed (opened only once a client
-# subscribes). Read-only: nothing is written, no command is sent to a device, no macro
-# is run.
+# tango-ds, the Pool and MacroServer ON, the Door ON, RUNNING (a scan may be running) or
+# ALARM (its last macro ended in an error; it still takes macros); the lab's elements
+# on the Pool, each ON or MOVING; the MacroServer knowing every element the Pool has (a
+# MacroServer that doesn't yet answers "does not exist in any Pool", Ch31); ActiveMntGrp
+# set to the lab's measurement group. From here (beamlinehost, on the lab network):
+# each server's fixed CORBA and heartbeat port accepts, the nat0 side stays closed. The
+# ZeroMQ event ports are not probed (opened only once a client subscribes). Read-only:
+# nothing is written, no command is sent to a device, no macro is run.
 set -uo pipefail
 # shellcheck source-path=SCRIPTDIR/..
 # shellcheck source=fleet-lib.sh
@@ -69,11 +69,12 @@ try:
 except tango.DevFailed as e:
     print(f"FAIL|database: {tango_host} does not answer: {e.args[0].reason}")
     sys.exit(0)
-# The states each server may be in: the Door is RUNNING while a macro (a scan) runs.
+# The states each server may be in: the Door is RUNNING while a macro (a scan) runs,
+# and ALARM once a macro ended in an error, until the next one starts.
 good = {
     pool_name: (tango.DevState.ON,),
     ms_name: (tango.DevState.ON,),
-    door_name: (tango.DevState.ON, tango.DevState.RUNNING),
+    door_name: (tango.DevState.ON, tango.DevState.RUNNING, tango.DevState.ALARM),
 }
 up = {}
 for name, states in good.items():
@@ -90,7 +91,9 @@ for name, states in good.items():
         continue
     served = "exported" if exported else "not exported"
     if state in states and exported and host == expect_host:
-        print(f"OK|{name}: {state}, {served} from {host}")
+        failed = state == tango.DevState.ALARM
+        note = " (last macro ended in an error)" if failed else ""
+        print(f"OK|{name}: {state}{note}, {served} from {host}")
     else:
         want_states = " or ".join(str(s) for s in states)
         print(
