@@ -8,7 +8,7 @@ summarises them. Checks are read-only: they never change anything.
 - `NN-area.sh` -- runs on every `fleet-check.sh` call, under
   `FLEET_CHECK_TIMEOUT` seconds.
 - `NN-area.slow.sh` -- runs only with `fleet-check.sh --slow`, under
-  `FLEET_SLOW_CHECK_TIMEOUT` seconds (e.g. Ansible drift, about 200 s).
+  `FLEET_SLOW_CHECK_TIMEOUT` seconds (e.g. Ansible drift, about 250 s in Oct 2026).
 - Not executable = disabled; listed as such in the summary. A chapter adds
   the checks for what it builds and enables them once that thing exists.
 
