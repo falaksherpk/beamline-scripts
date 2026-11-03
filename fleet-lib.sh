@@ -201,10 +201,16 @@ fleet_lock() {
 }
 
 # Copy everything printed from here on to logs/<name>-<timestamp>.log.
+# tee does not inherit the lock: it lives as long as anything still writes to
+# it, and must not keep the lock after the script itself has gone.
 fleet_start_log() {
   mkdir -p "$FLEET_DIR/logs"
   FLEET_LOG_FILE="$FLEET_DIR/logs/$1-$(date +%Y%m%d-%H%M%S).log"
-  exec > >(tee -a "$FLEET_LOG_FILE") 2>&1
+  if [[ -n ${FLEET_LOCK_FD:-} ]]; then
+    exec > >(tee -a "$FLEET_LOG_FILE" {FLEET_LOCK_FD}>&-) 2>&1
+  else
+    exec > >(tee -a "$FLEET_LOG_FILE") 2>&1
+  fi
   fleet_info "=== Logging this run to $FLEET_LOG_FILE ==="
 }
 

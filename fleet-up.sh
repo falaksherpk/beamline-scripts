@@ -140,7 +140,7 @@ for t in "${!FLEET_TIERS[@]}"; do
         if out=$(virsh start "$h" 2>&1); then
           STARTED_AT[$h]=$SECONDS
           fleet_info "$h: started"; STARTED+=("$h"); to_wait+=("$h"); started_here=$(( started_here + 1 ))
-          wait_for_ssh "$h" "${STARTED_AT[$h]}" &
+          wait_for_ssh "$h" "${STARTED_AT[$h]}" {FLEET_LOCK_FD}>&- &
           pids[$h]=$!
         else
           fleet_error "$h: virsh start failed: $out"; FAILURES+=("$h: virsh start failed")
@@ -148,7 +148,7 @@ for t in "${!FLEET_TIERS[@]}"; do
       running)
         if [[ $FLEET_DRY_RUN == true ]]; then fleet_info "[DRY RUN] $h: already running, would wait for SSH"; continue; fi
         fleet_info "$h: already running"; ALREADY_RUNNING+=("$h"); to_wait+=("$h")
-        wait_for_ssh "$h" "" &
+        wait_for_ssh "$h" "" {FLEET_LOCK_FD}>&- &
         pids[$h]=$! ;;
       *)
         fleet_error "$h: state '$state' -- not starting it; resolve by hand"
