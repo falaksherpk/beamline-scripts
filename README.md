@@ -81,7 +81,7 @@ Run everything on `beamlinehost`, from the repository directory (it is not on
 
 ```bash
 cd ~/beamline-scripts
-./fleet-up.sh --dry-run      # show the plan; touches nothing
+./fleet-up.sh --dry-run      # show the plan; starts no VM
 ./fleet-up.sh                # start all 13 VMs
 ./fleet-check.sh             # fast health checks
 ./fleet-down.sh              # graceful shutdown
