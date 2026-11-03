@@ -132,7 +132,22 @@ else:
     if fail_total == 0:
         print("OK|archiving: no failed event or store in the last 60 s")
     else:
-        print("FAIL|archiving: %d failed event(s) or store(s) in the last 60 s (want 0)" % fail_total)
+        # Name the attributes behind the count. AttributeFailureFreqList is aligned with
+        # AttributeList, like AttributeRecordFreqList above (a numpy array, so no "or []").
+        # Naming is detail only: whatever goes wrong here, the verdict stays FAIL.
+        try:
+            fv = es.read_attribute("AttributeFailureFreqList").value
+            fvals = list(fv) if fv is not None else []
+            if len(fvals) == len(running):
+                failing = [short(n) for n, f in zip(running, fvals, strict=True) if f > 0]
+                named = failing[:5] if failing else "no attribute named by AttributeFailureFreqList"
+            else:
+                named = "AttributeFailureFreqList has %d entries for %d attributes" % (len(fvals), len(running))
+        except tango.DevFailed as e:
+            named = "AttributeFailureFreqList unreadable: %s" % e.args[0].reason
+        except Exception as e:
+            named = "naming failed: %s: %s" % (type(e).__name__, str(e)[:100])
+        print("FAIL|archiving: %d failed event(s) or store(s) in the last 60 s (want 0): %s" % (fail_total, named))
 ' "$es_dev" "$cm_dev" "$expect_host" "$expect" "$tango_host" || say CANNOT "hdbpp: python3 exit $?"
 
 # The nat0 address, for the exposure probe run from beamlinehost.
