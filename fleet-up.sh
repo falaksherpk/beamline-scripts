@@ -146,6 +146,7 @@ for t in "${!FLEET_TIERS[@]}"; do
           fleet_error "$h: virsh start failed: $out"; FAILURES+=("$h: virsh start failed")
         fi ;;
       running)
+        if [[ $FLEET_DRY_RUN == true ]]; then fleet_info "[DRY RUN] $h: already running, would wait for SSH"; continue; fi
         fleet_info "$h: already running"; ALREADY_RUNNING+=("$h"); to_wait+=("$h")
         wait_for_ssh "$h" "" &
         pids[$h]=$! ;;
