@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# CI runner on pkg.beamline (handbook Ch17): gitlab-runner running and its
-# packages held, exactly one registered runner and GitLab accepting it, the
-# weekly image prune scheduled and not failing, and the publishing path of CI
+# CI runners on pkg.beamline (handbook Ch17, Part 4 Ch34): gitlab-runner running
+# and its packages held, exactly the expected project runners registered, GitLab
+# accepting each of them and one job at a time across them, the weekly image prune
+# scheduled and not failing, and the publishing path of CI
 # jobs: linger for both users, the drop directory (owner, mode, nothing left
 # behind) and a sudoers rule that allows exactly the two beamline-publish commands.
 set -uo pipefail
@@ -18,13 +19,24 @@ SUDOERS=/etc/sudoers.d/gitlab-runner-publish
 SUDO_RULE='(falak) NOPASSWD: /usr/local/bin/beamline-publish deb /var/spool/beamline-publish/*.deb, /usr/local/bin/beamline-publish conda /var/spool/beamline-publish/*.conda'
 # A hand-over file older than this was left behind by a job (jobs remove theirs).
 STALE_MIN=60
+# The project runners registered on this host, by name. They are registered by hand
+# from a hidden prompt (Ch17, Part 4 Ch34), not by the role; one service runs them,
+# one job at a time across all of them (concurrent).
+RUNNERS=(
+  "pkg.beamline shell (beamline-healthcheck)"
+  "pkg.beamline shell (tango-devices)"
+)
+CONCURRENT=1
 
 # Runs on the host as FLEET_SSH_USER, with sudo -n for what needs root. The
 # values above go first, quoted by printf %q; the whole program travels
 # base64-encoded, so its quoting does not depend on two shells.
 remote=$( {
-  printf 'drop=%q drop_stat=%q sudoers=%q rule=%q stale=%q\n' \
-    "$DROP" "$DROP_STAT" "$SUDOERS" "$SUDO_RULE" "$STALE_MIN"
+  printf 'drop=%q drop_stat=%q sudoers=%q rule=%q stale=%q concurrent=%q\n' \
+    "$DROP" "$DROP_STAT" "$SUDOERS" "$SUDO_RULE" "$STALE_MIN" "$CONCURRENT"
+  printf 'runners=('
+  printf ' %q' "${RUNNERS[@]}"
+  printf ' )\n'
   cat << 'SH'
 say() { printf '%s|%s\n' "$1" "$2"; }
 nocolor() { sed 's/\x1b\[[0-9;]*m//g'; }
@@ -54,18 +66,40 @@ if (( ${#versions[@]} == 2 )) && [[ ${versions[0]} != "${versions[1]}" ]]; then
   say FAIL "runner packages at different versions: ${versions[*]}"
 fi
 
-# 3. Exactly one registered runner, and GitLab accepts it. verify only asks
+# 3. Exactly the expected runners registered (by name, so a replaced runner counts),
+#    one job at a time across them, and GitLab accepting each. Only the name and
+#    concurrent lines of config.toml are read, never a token line. verify only asks
 #    GitLab; never add --delete here, which would remove a runner it rejects.
 if (( root )); then
-  n=$(sudo -n grep -c '^\[\[runners\]\]' /etc/gitlab-runner/config.toml 2>&1)
+  cfg=/etc/gitlab-runner/config.toml
+  if names=$(sudo -n sed -nE 's/^[[:space:]]*name[[:space:]]*=[[:space:]]*"(.*)"[[:space:]]*$/\1/p' "$cfg" 2>&1); then
+    want=$(printf '%s\n' "${runners[@]}" | sort)
+    have=$(sort <<< "$names")
+    if [[ $have == "$want" ]]; then
+      say OK "runners: exactly the ${#runners[@]} expected registered in config.toml"
+    else
+      say FAIL "runners in config.toml: '$(tr '\n' ';' <<< "$have")' (want '$(tr '\n' ';' <<< "$want")')"
+    fi
+  else
+    say CANNOT "runners: could not read $cfg: ${names//$'\n'/ }"
+  fi
+  c=$(sudo -n sed -nE 's/^concurrent[[:space:]]*=[[:space:]]*([0-9]+)[[:space:]]*$/\1/p' "$cfg" 2>&1)
+  if [[ $c == "$concurrent" ]]; then say OK "runners: concurrent = $c (one job at a time across them)"
+  else say FAIL "runners: concurrent '${c//$'\n'/ }' in $cfg (want $concurrent)"; fi
   out=$(sudo -n gitlab-runner verify 2>&1)
   vrc=$?
   out=$(nocolor <<< "$out")
-  valid=$(grep -c 'is valid' <<< "$out")
-  if [[ $n == 1 && $vrc == 0 && $valid == 1 ]]; then
-    say OK "runner: 1 registered, GitLab accepts it ($(grep -o 'runner=[^ ]*' <<< "$out" | head -1))"
-  else
-    say FAIL "runner: ${n//$'\n'/ } in config.toml, verify exit $vrc, $valid valid; $(grep -iE 'valid|error|fatal' <<< "$out" | tail -1 | tr -s ' ' | cut -c1-160)"
+  for r in "${runners[@]}"; do
+    line=$(awk -v r="$r" 'index($0, "is valid") && (i = index($0, "runner_name=")) {
+      n = substr($0, i + 12); sub(/[ \t\r]+$/, "", n); if (n == r) { print; exit } }' <<< "$out")
+    if [[ -n $line ]]; then
+      say OK "runner '$r': GitLab accepts it ($(grep -o 'runner=[^ ]*' <<< "$line" | head -1))"
+    else
+      say FAIL "runner '$r': verify reports no valid runner by that name (verify exit $vrc)"
+    fi
+  done
+  if (( vrc != 0 )); then
+    say FAIL "runners: gitlab-runner verify exit $vrc; $(grep -iE 'error|fatal' <<< "$out" | tail -1 | tr -s ' ' | cut -c1-160)"
   fi
 fi
 

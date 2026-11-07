@@ -210,7 +210,7 @@ update both, and put the new host in a tier.
 | `30-podman` | Rootless Podman on `pkg` |
 | `40-pkg-repo` | Package site over verified TLS, apt signature and index integrity, conda indexes, HTTPS closed on `nat0` |
 | `50-observability` | Prometheus (ready, rules, expected jobs and targets), Alertmanager Watchdog, per-host health timer, Grafana over TLS, exposure from here |
-| `60-ci-runner` | GitLab Runner on `pkg`: service, held packages, one accepted registration, prune timer, publish path and sudoers rule |
+| `60-ci-runner` | GitLab Runner on `pkg`: service, held packages, exactly the expected project runners (by name) accepted by GitLab, `concurrent`, prune timer, publish path and sudoers rule |
 | `70-slurm` | munge, MariaDB, slurmdbd, slurmctld; exactly the configured nodes, each usable with its GRES; accounting chain; ports dropped from here |
 | `80-tango` | `tango-lab.target` and its units, Tango DB, each device ON and exported; CORBA ports reachable on `lab0`, closed on `nat0` |
 | `82-sardana` | Pool, MacroServer and Door; Pool elements; MacroServer's view; `ActiveMntGrp`; ports |
