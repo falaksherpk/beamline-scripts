@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Tango control system (handbook Part 3, Ch29; Part 4, Ch35), seen from tango-ds:
-# tango-lab.target and every device-server and simulator instance of the package's
-# template units active, enabled and loaded from the package, with the environment files
-# they name present; the Tango database answering, through the package's runtime; each
-# lab device ON, exported and served from tango-ds. From here
+# Tango control system (handbook Part 3, Ch29; Part 4, Ch35-36), seen from tango-ds:
+# tango-lab.target, every device-server and simulator instance of the package's template
+# units and the exporter's instance active, enabled and loaded from the package, with the
+# environment files they name present; the Tango database answering, through the
+# package's runtime; each lab device ON, exported and served from tango-ds. From here
 # (beamlinehost, on the lab network): each server's fixed CORBA and heartbeat port
-# accepts connections, while the simulators' ports and the servers' nat0 side stay
-# closed. The ZeroMQ event ports are not probed: a server opens one only once a client
+# accepts connections, while the simulators' ports, the exporter's port (obs only) and
+# the servers' nat0 side stay closed. The ZeroMQ event ports are not probed: a server opens one only once a client
 # subscribes. Read-only: nothing is written, no command is sent to a device.
 set -uo pipefail
 # shellcheck source-path=SCRIPTDIR/..
@@ -17,11 +17,14 @@ source "${FLEET_DIR:?run from fleet-check.sh}/fleet-lib.sh"
 HOST=${CHECK_TANGO_HOST:-tango-ds.beamline}
 REACH_PORTS=${CHECK_TANGO_REACH_PORTS:-28368 28369 28370 28371 28372 28468 28469 28470 28471 28472}
 CLOSED_PORTS=${CHECK_TANGO_CLOSED_PORTS:-9999 5025 1234 5020 5040}
+# The exporter (Part 4 Ch36) answers obs only: from here its port must be dropped.
+EXPORTER_PORT=${CHECK_TANGO_EXPORTER_PORT:-9580}
 # What beamline-ansible's tango_ds role configures (Ch29: the ufw blocks; Ch35:
-# tango_ds_servers and tango_ds_simulators, one instance each); keep the two in step.
+# tango_ds_servers and tango_ds_simulators, one instance each; Ch36: the exporter, outside
+# the target); keep the two in step.
 TANGO_HOST_VAL=tango-db.beamline:10000
 DEVICES="linac/magnet/q1 linac/beam/faradaycup1 linac/camera/ceyag1 linac/vacuum/gauge1 linac/safety/interlock1"
-UNITS="tango-sim-magnet-link@q1 tango-sim-magnet-psu@q1 tango-sim-picoammeter@faradaycup1 tango-sim-prologix@faradaycup1 tango-sim-camera@ceyag1 tango-sim-vacuum@gauge1 tango-sim-plc@interlock1 tango-magnet@q1 tango-faradaycup@faradaycup1 tango-camera@ceyag1 tango-vacuum@gauge1 tango-interlock@interlock1"
+UNITS="tango-sim-magnet-link@q1 tango-sim-magnet-psu@q1 tango-sim-picoammeter@faradaycup1 tango-sim-prologix@faradaycup1 tango-sim-camera@ceyag1 tango-sim-vacuum@gauge1 tango-sim-plc@interlock1 tango-magnet@q1 tango-faradaycup@faradaycup1 tango-camera@ceyag1 tango-vacuum@gauge1 tango-interlock@interlock1 tango-exporter@linac"
 # The package's runtime: PyTango is not in the system Python since Ch35.
 TANGO_PYTHON=/opt/beamline-tango/bin/python3
 NAT_IFACE=nat0
@@ -153,6 +156,14 @@ else
       *)   fleet_check_cannot "exposure: $HOST:$p probe exit $prc" ;;
     esac
   done
+  # The exporter: ufw admits obs only (its being up is 50-observability's job tango).
+  prc=0; probe "$HOST" "$EXPORTER_PORT" || prc=$?
+  case $prc in
+    124) fleet_check_ok "exposure: $HOST:$EXPORTER_PORT (exporter) does not answer from here (dropped; obs only)" ;;
+    0)   fleet_check_fail "exposure: $HOST:$EXPORTER_PORT (exporter) accepts connections from here (want obs only)" ;;
+    1)   fleet_check_fail "exposure: $HOST:$EXPORTER_PORT (exporter) refused: the firewall let it through (want dropped)" ;;
+    *)   fleet_check_cannot "exposure: $HOST:$EXPORTER_PORT probe exit $prc" ;;
+  esac
 fi
 
 # 6. The servers bind the lab address only, and ufw allows the lab network only: the

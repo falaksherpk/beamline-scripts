@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Observability on obs.beamline (handbook Ch16): Prometheus (ready, config
 # reload, rules, targets), the alert path (Watchdog in Alertmanager, nothing
-# else firing), beamline-healthcheck fresh and passing on every fleet host,
+# else firing unsilenced; the active silences listed, so none hides anything
+# unseen), beamline-healthcheck fresh and passing on every fleet host,
 # Grafana over verified TLS, Prometheus/Alertmanager unreachable from here, and
 # GitLab's metrics endpoints (scraped by obs) not served to this host.
 set -uo pipefail
@@ -38,6 +39,8 @@ EXPECTED_JOBS = {
     "prometheus": 1, "alertmanager": 1,
     "gitlab-rails": 1, "gitlab-workhorse": 1, "gitlab-gitaly": 1,
     "kube-state-metrics": 1, "kubelet": 3, "cadvisor": 3,
+    # The Tango exporter on tango-ds (role tango_ds; Part 4 Ch36).
+    "tango": 1,
 }
 
 
@@ -151,6 +154,19 @@ def alert_path():
         say("FAIL", f"alerts firing: {', '.join(others)}")
     else:
         say("OK", "alerts: nothing firing besides Watchdog")
+    # A silenced alert passes the line above, so every active silence is named here,
+    # with what it matches and when it ends (Part 4 Ch36). Informational: never a FAIL.
+    _, body = fetch(AM + "/api/v2/silences")
+    active = sorted((s for s in json.loads(body) if s["status"]["state"] == "active"),
+                    key=lambda s: s["endsAt"])
+    if not active:
+        say("OK", "silences: none active")
+    for s in active:
+        matchers = " ".join(f"{m['name']}{'=' if m.get('isEqual', True) else '!='}"
+                            f"{'~' if m.get('isRegex') else ''}{m['value']}"
+                            for m in s["matchers"])
+        until = s["endsAt"][:16].replace("T", " ")
+        say("OK", f"silence {s['id'][:8]}: {matchers}, until {until} UTC, by {s['createdBy']}")
 
 
 def healthcheck():
