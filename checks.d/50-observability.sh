@@ -3,8 +3,10 @@
 # reload, rules, targets), the alert path (Watchdog in Alertmanager, nothing
 # else firing unsilenced; the active silences listed, so none hides anything
 # unseen), beamline-healthcheck fresh and passing on every fleet host,
-# Grafana over verified TLS, Prometheus/Alertmanager unreachable from here, and
-# GitLab's metrics endpoints (scraped by obs) not served to this host.
+# Grafana over verified TLS, its HDB++ archive datasource healthy and its
+# dashboards provisioned (through its API, on obs), Prometheus/Alertmanager
+# unreachable from here, and GitLab's metrics endpoints (scraped by obs) not
+# served to this host.
 set -uo pipefail
 # shellcheck source-path=SCRIPTDIR/..
 # shellcheck source=fleet-lib.sh
@@ -13,6 +15,10 @@ source "${FLEET_DIR:?run from fleet-check.sh}/fleet-lib.sh"
 # Overridable only to test the check against a wrong target (checks.d/README.md).
 HOST=${CHECK_OBS_HOST:-obs.beamline}
 GRAFANA="https://$HOST:3000/api/health"
+# What beamline-ansible's grafana role provisions (Part 4 Ch36: the hdbpp datasource,
+# grafana_dashboards); keep the two in step.
+GRAFANA_DS=hdbpp
+GRAFANA_DASHBOARDS="beamline-fleet beamline-tango"
 # Seconds; the health check's timer runs every minute (alert BeamlineHealthcheckStale).
 STALE=300
 # GitLab's metrics (role gitlab, Ch16) are for obs only: Rails /-/metrics through
@@ -231,6 +237,108 @@ elif [[ $(jq -r '.database // empty' "$body" 2>/dev/null) == ok ]]; then
   fleet_check_ok "grafana: $GRAFANA -> 200 over verified TLS, database ok, version $(jq -r '.version // "?"' "$body")"
 else
   fleet_check_fail "grafana: $GRAFANA -> 200 but database is '$(jq -r '.database // "?"' "$body" 2>/dev/null)' (want ok)"
+fi
+
+# 2b. Grafana's HDB++ archive datasource and its provisioned dashboards (Part 4 Ch36),
+#     through Grafana's API as admin, run on obs: the password is read there with
+#     sudo -n, goes to Python on stdin, and is never printed or sent to this host;
+#     without passwordless sudo the check reports CANNOT. GETs only; the datasource's
+#     health check opens one session to tango-db (TLS, account grafana) and pings it.
+addr=$(getent ahostsv4 "$HOST" | awk 'NR == 1 { print $1 }')
+if [[ -z $addr ]]; then
+  fleet_check_cannot "grafana api: $HOST does not resolve here, datasource and dashboards not checked"
+else
+  remote_api=$( {
+    printf 'host=%q addr=%q ds=%q dashboards=%q\n' "$HOST" "$addr" "$GRAFANA_DS" "$GRAFANA_DASHBOARDS"
+    cat << 'SH'
+if ! sudo -n true 2> /dev/null; then
+  echo "CANNOT|grafana api: sudo -n as $(id -un) needs a password on $(hostname), datasource and dashboards not checked"
+  exit 0
+fi
+if ! sudo -n test -s /etc/grafana/admin_password; then
+  echo "CANNOT|grafana api: /etc/grafana/admin_password missing or empty on $(hostname)"
+  exit 0
+fi
+prog=$(cat << 'PY'
+import base64, http.client, json, socket, ssl, sys
+
+host, addr, ds = sys.argv[1], sys.argv[2], sys.argv[3]
+dashboards = sys.argv[4:]
+PORT = 3000
+pw = sys.stdin.readline().rstrip("\n")
+auth = "Basic " + base64.b64encode(f"admin:{pw}".encode()).decode()
+del pw
+ctx = ssl.create_default_context()  # the system store, which has the lab CA (role common)
+
+
+def say(kind, msg):
+    print(f"{kind}|{msg}", flush=True)
+
+
+class Conn(http.client.HTTPSConnection):
+    # Grafana listens on the lab address only; its certificate is checked as the host name.
+    def connect(self):
+        sock = socket.create_connection((addr, PORT), self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=host)
+
+
+def get(path):
+    conn = Conn(host, PORT, context=ctx, timeout=20)
+    try:
+        conn.request("GET", path, headers={"Authorization": auth, "Accept": "application/json"})
+        resp = conn.getresponse()
+        body = resp.read()
+    finally:
+        conn.close()
+    try:
+        return resp.status, json.loads(body)
+    except ValueError:
+        return resp.status, {}
+
+
+try:
+    st, h = get(f"/api/datasources/uid/{ds}/health")
+    if st == 401:
+        say("FAIL", "grafana api: admin login refused (HTTP 401): /etc/grafana/admin_password is not the admin password")
+        sys.exit(0)
+    if st == 200 and h.get("status") == "OK":
+        say("OK", f"grafana datasource {ds}: health OK ({h.get('message')})")
+    else:
+        say("FAIL", f"grafana datasource {ds}: HTTP {st}, status {h.get('status')}, message {str(h.get('message'))[:160]!r}")
+    for uid in dashboards:
+        st, d = get(f"/api/dashboards/uid/{uid}")
+        dash, meta = d.get("dashboard") or {}, d.get("meta") or {}
+        if st == 200 and meta.get("provisioned"):
+            say("OK", f"grafana dashboard {uid}: '{dash.get('title')}', {len(dash.get('panels') or [])} panels, provisioned")
+        elif st == 200:
+            say("FAIL", f"grafana dashboard {uid}: present but not provisioned (saved or imported by hand?)")
+        else:
+            say("FAIL", f"grafana dashboard {uid}: HTTP {st} (want 200, provisioned)")
+except (ssl.SSLError, OSError, http.client.HTTPException) as exc:
+    say("CANNOT", f"grafana api at https://{host}:{PORT} ({addr}): {type(exc).__name__}: {exc}")
+PY
+)
+# $dashboards unquoted on purpose: one argument per dashboard uid.
+sudo -n cat /etc/grafana/admin_password | python3 -I -c "$prog" "$host" "$addr" "$ds" $dashboards
+SH
+  } | base64 -w0 )
+  rc=0
+  out=$(fleet_ssh "$HOST" "echo $remote_api | base64 -d | bash" 2>&1) || rc=$?
+  if (( rc == 255 )); then
+    fleet_check_cannot "grafana api: ssh to $HOST failed: ${out:0:300}"
+  else
+    n=0
+    while IFS='|' read -r kind msg; do
+      case $kind in
+        OK) fleet_check_ok "$msg"; n=$(( n + 1 )) ;;
+        FAIL) fleet_check_fail "$msg"; n=$(( n + 1 )) ;;
+        CANNOT) fleet_check_cannot "$msg"; n=$(( n + 1 )) ;;
+      esac
+    done <<< "$out"
+    if (( rc != 0 || n == 0 )); then
+      fleet_check_cannot "grafana api on $HOST exited $rc with $n verdict(s); last output: $(tail -n 2 <<< "$out" | tr '\n' ' ')"
+    fi
+  fi
 fi
 
 # 3. Prometheus and Alertmanager are loopback-only on obs: from here they must

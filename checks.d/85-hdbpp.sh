@@ -6,7 +6,8 @@
 # attribute stored at least once in the EventSubscriber's last statistics window (60 s;
 # with the 10 s archive_period heartbeat a live attribute stores about 6), and no store
 # failed. From here (beamlinehost, on the lab network): each server's fixed CORBA and
-# heartbeat port accepts, the nat0 side stays closed. The ZeroMQ event ports are not
+# heartbeat port accepts, the nat0 side stays closed, and the archive's MariaDB port
+# (3306, for Grafana on obs only; Part 4 Ch36) is dropped. The ZeroMQ event ports are not
 # probed (opened only once a client subscribes). Read-only: nothing is written, no
 # command is sent to a device, no SQL is run.
 set -uo pipefail
@@ -28,6 +29,9 @@ CM_DEV=archiving/hdbpp/confmanager01
 UNITS="es cm"
 NAT_IFACE=nat0
 PROBE_TIMEOUT=3
+# The archive's MariaDB (beamline-ansible role tango_db: tango_db_bind_addresses, ufw
+# from obs only; Part 4 Ch36). Overridable only to test the check.
+ARCHIVE_PORT=${CHECK_HDBPP_ARCHIVE_PORT:-3306}
 
 # Runs on tango-db as FLEET_SSH_USER; nothing needs root. The values above go first,
 # quoted by printf %q; the whole program travels base64-encoded, so its quoting does
@@ -213,6 +217,19 @@ else
     0)   fleet_check_fail "exposure: $HOST:$first_port via $NAT_IFACE ($nat_ip) accepts connections (want dropped)" ;;
     1)   fleet_check_fail "exposure: $HOST:$first_port via $NAT_IFACE ($nat_ip) refused: the firewall let it through (want dropped)" ;;
     *)   fleet_check_cannot "exposure: $HOST:$first_port via $NAT_IFACE probe exit $prc" ;;
+  esac
+fi
+
+# 6. The archive's MariaDB listens on the lab address for Grafana on obs, and ufw admits
+#    obs only: from here its port must be dropped. Section 4 reports a name that does
+#    not resolve.
+if getent hosts "$HOST" > /dev/null; then
+  prc=0; probe "$HOST" "$ARCHIVE_PORT" || prc=$?
+  case $prc in
+    124) fleet_check_ok "exposure: $HOST:$ARCHIVE_PORT (MariaDB) does not answer from here (dropped; obs only)" ;;
+    0)   fleet_check_fail "exposure: $HOST:$ARCHIVE_PORT (MariaDB) accepts connections from here (want obs only)" ;;
+    1)   fleet_check_fail "exposure: $HOST:$ARCHIVE_PORT (MariaDB) refused: the firewall let it through (want dropped)" ;;
+    *)   fleet_check_cannot "exposure: $HOST:$ARCHIVE_PORT (MariaDB) probe exit $prc" ;;
   esac
 fi
 
