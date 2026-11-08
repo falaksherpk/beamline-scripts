@@ -212,8 +212,8 @@ update both, and put the new host in a tier.
 | `50-observability` | Prometheus (ready, rules, expected jobs and targets), Alertmanager Watchdog, per-host health timer, Grafana over TLS, exposure from here |
 | `60-ci-runner` | GitLab Runner on `pkg`: service, held packages, exactly the expected project runners (by name) accepted by GitLab, `concurrent`, prune timer, publish path and sudoers rule |
 | `70-slurm` | munge, MariaDB, slurmdbd, slurmctld; exactly the configured nodes, each usable with its GRES; accounting chain; ports dropped from here |
-| `80-tango` | `tango-lab.target` and its units, Tango DB, each device ON and exported; CORBA ports reachable on `lab0`, closed on `nat0` |
-| `82-sardana` | Pool, MacroServer and Door; Pool elements; MacroServer's view; `ActiveMntGrp`; ports |
+| `80-tango` | `tango-lab.target` and the package's instances (active, enabled, from the package, their environment files present), Tango DB through the package's runtime, each device ON and exported; CORBA ports reachable on `lab0`, closed on `nat0` |
+| `82-sardana` | Pool and MacroServer instances (as `80-tango`); Pool, MacroServer and Door; Pool elements; MacroServer's view; `ActiveMntGrp`; ports |
 | `85-hdbpp` | HDB++ EventSubscriber and ConfigurationManager; archived attribute count and storage; ports |
 | `90-ansible-drift.slow` | `site.yml --check` from `admin.beamline` on every host: every recap line `changed=0 unreachable=0 failed=0` |
 

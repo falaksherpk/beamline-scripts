@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Sardana (handbook Part 3, Ch31), seen from tango-ds: the Pool and MacroServer units
-# active and enabled; pool/linac/1, macroserver/linac/1 and door/linac/1 exported from
+# Sardana (handbook Part 3, Ch31; Part 4, Ch35), seen from tango-ds: the Pool and
+# MacroServer instances of the package's template units active, enabled and loaded from
+# the package, with the environment files they name present; read through the package's
+# runtime: pool/linac/1, macroserver/linac/1 and door/linac/1 exported from
 # tango-ds, the Pool and MacroServer ON, the Door ON, RUNNING (a scan may be running) or
 # ALARM (its last macro ended in an error; it still takes macros); the lab's elements
 # on the Pool, each ON or MOVING; the MacroServer knowing every element the Pool has (a
@@ -27,7 +29,9 @@ TANGO_HOST_VAL=tango-db.beamline:10000
 POOL_DEV=pool/linac/1
 MS_DEV=macroserver/linac/1
 DOOR_DEV=door/linac/1
-UNITS="pool macroserver"
+UNITS="tango-pool@linac tango-macroserver@linac"
+# The package's runtime: PyTango and Sardana are not in the system Python since Ch35.
+TANGO_PYTHON=/opt/beamline-tango/bin/python3
 NAT_IFACE=nat0
 PROBE_TIMEOUT=3
 
@@ -35,24 +39,37 @@ PROBE_TIMEOUT=3
 # quoted by printf %q; the whole program travels base64-encoded, so its quoting does
 # not depend on two shells.
 remote=$( {
-  printf 'units=%q tango_host=%q expect_host=%q pool=%q ms=%q door=%q elements=%q mntgrp=%q nat=%q\n' \
-    "$UNITS" "$TANGO_HOST_VAL" "$SERVER_HOST" "$POOL_DEV" "$MS_DEV" "$DOOR_DEV" "$ELEMENTS" "$MNTGRP" "$NAT_IFACE"
+  printf 'units=%q tango_host=%q expect_host=%q pool=%q ms=%q door=%q elements=%q mntgrp=%q nat=%q python=%q\n' \
+    "$UNITS" "$TANGO_HOST_VAL" "$SERVER_HOST" "$POOL_DEV" "$MS_DEV" "$DOOR_DEV" "$ELEMENTS" "$MNTGRP" "$NAT_IFACE" "$TANGO_PYTHON"
   cat << 'SH'
 say() { printf '%s|%s\n' "$1" "$2"; }
 one() { tr '\n' ' ' <<< "$1" | tr -s ' ' | sed 's/ $//' | cut -c1-200; }
 
-# 1. Both units.
+# 1. Both instances.
+# Each active, enabled and loaded from the package (a copy in /etc/systemd/system would
+# override it), and every environment file its unit names present: systemd-analyze verify
+# doesn't notice a missing one (Ch33), and the instance would fail only at its next start.
 read -ra unit_list <<< "$units"
-for u in "${unit_list[@]/#/tango-}"; do
+envs=0 missing=()
+for u in "${unit_list[@]}"; do
   a=$(systemctl is-active "$u" 2>&1)
   e=$(systemctl is-enabled "$u" 2>&1)
-  if [[ $a == active && $e == enabled ]]; then say OK "$u: active, enabled"
-  else say FAIL "$u: $(one "$a"), $(one "$e") (want active, enabled)"; fi
+  p=$(systemctl show -p FragmentPath --value "$u" 2>&1)
+  if [[ $a == active && $e == enabled && $p == /usr/lib/systemd/system/* ]]; then say OK "$u: active, enabled, from the package"
+  else say FAIL "$u: $(one "$a"), $(one "$e"), unit file $(one "${p:-none}") (want active, enabled, from /usr/lib/systemd/system)"; fi
+  while read -r f _; do
+    [[ $f == /* ]] || continue
+    envs=$(( envs + 1 ))
+    [[ -r $f ]] || missing+=("$u: $f")
+  done < <(systemctl show -p EnvironmentFiles --value "$u" 2>/dev/null)
 done
+if (( ${#missing[@]} )); then say FAIL "site data: ${#missing[@]} of $envs environment file(s) missing: ${missing[*]:0:3}"
+elif (( envs == 0 )); then say FAIL "site data: no instance names an environment file (want the package's units)"
+else say OK "site data: all $envs environment file(s) the instances name are present"; fi
 
 # 2. The three devices exported from this host and in a good state; 3. the Pool's
 #    elements; 4. what the MacroServer knows; 5. its ActiveMntGrp.
-TANGO_HOST=$tango_host timeout 30 python3 -c '
+TANGO_HOST=$tango_host timeout 30 "$python" -c '
 import json
 import pickle
 import sys
@@ -165,7 +182,7 @@ elif active == mntgrp:
     print(f"OK|macroserver: ActiveMntGrp is {mntgrp}")
 else:
     print(f"FAIL|macroserver: ActiveMntGrp is {active} (want {mntgrp})")
-' "$pool" "$ms" "$door" "$expect_host" "$tango_host" "$elements" "$mntgrp" || say CANNOT "sardana: python3 exit $?"
+' "$pool" "$ms" "$door" "$expect_host" "$tango_host" "$elements" "$mntgrp" || say CANNOT "sardana: $python exit $?"
 
 # The nat0 address, for the exposure probe run from beamlinehost.
 n=$(ip -4 -o addr show dev "$nat" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)

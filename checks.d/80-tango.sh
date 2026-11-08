@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Tango control system (handbook Part 3, Ch29), seen from tango-ds: tango-lab.target and
-# every device-server and simulator unit active and enabled; the Tango database
-# answering; each lab device ON, exported and served from tango-ds. From here
+# Tango control system (handbook Part 3, Ch29; Part 4, Ch35), seen from tango-ds:
+# tango-lab.target and every device-server and simulator instance of the package's
+# template units active, enabled and loaded from the package, with the environment files
+# they name present; the Tango database answering, through the package's runtime; each
+# lab device ON, exported and served from tango-ds. From here
 # (beamlinehost, on the lab network): each server's fixed CORBA and heartbeat port
 # accepts connections, while the simulators' ports and the servers' nat0 side stay
 # closed. The ZeroMQ event ports are not probed: a server opens one only once a client
@@ -15,11 +17,13 @@ source "${FLEET_DIR:?run from fleet-check.sh}/fleet-lib.sh"
 HOST=${CHECK_TANGO_HOST:-tango-ds.beamline}
 REACH_PORTS=${CHECK_TANGO_REACH_PORTS:-28368 28369 28370 28371 28372 28468 28469 28470 28471 28472}
 CLOSED_PORTS=${CHECK_TANGO_CLOSED_PORTS:-9999 5025 1234 5020 5040}
-# What beamline-ansible's tango_ds role configures (Ch29: tango_ds_servers,
-# tango_ds_simulators, the ufw blocks); keep the two in step.
+# What beamline-ansible's tango_ds role configures (Ch29: the ufw blocks; Ch35:
+# tango_ds_servers and tango_ds_simulators, one instance each); keep the two in step.
 TANGO_HOST_VAL=tango-db.beamline:10000
 DEVICES="linac/magnet/q1 linac/beam/faradaycup1 linac/camera/ceyag1 linac/vacuum/gauge1 linac/safety/interlock1"
-UNITS="magnet-socat magnet-psu faradaycup-picoammeter faradaycup-adapter camera-sim vacuum-sim interlock-sim magnet faradaycup camera vacuum interlock"
+UNITS="tango-sim-magnet-link@q1 tango-sim-magnet-psu@q1 tango-sim-picoammeter@faradaycup1 tango-sim-prologix@faradaycup1 tango-sim-camera@ceyag1 tango-sim-vacuum@gauge1 tango-sim-plc@interlock1 tango-magnet@q1 tango-faradaycup@faradaycup1 tango-camera@ceyag1 tango-vacuum@gauge1 tango-interlock@interlock1"
+# The package's runtime: PyTango is not in the system Python since Ch35.
+TANGO_PYTHON=/opt/beamline-tango/bin/python3
 NAT_IFACE=nat0
 PROBE_TIMEOUT=3
 
@@ -27,22 +31,35 @@ PROBE_TIMEOUT=3
 # quoted by printf %q; the whole program travels base64-encoded, so its quoting does
 # not depend on two shells.
 remote=$( {
-  printf 'units=%q devices=%q tango_host=%q expect_host=%q nat=%q\n' "$UNITS" "$DEVICES" "$TANGO_HOST_VAL" "$HOST" "$NAT_IFACE"
+  printf 'units=%q devices=%q tango_host=%q expect_host=%q nat=%q python=%q\n' "$UNITS" "$DEVICES" "$TANGO_HOST_VAL" "$HOST" "$NAT_IFACE" "$TANGO_PYTHON"
   cat << 'SH'
 say() { printf '%s|%s\n' "$1" "$2"; }
 one() { tr '\n' ' ' <<< "$1" | tr -s ' ' | sed 's/ $//' | cut -c1-200; }
 
-# 1. The target and every unit.
+# 1. The target and every instance.
+# Each active, enabled and loaded from the package (a copy in /etc/systemd/system would
+# override it), and every environment file its unit names present: systemd-analyze verify
+# doesn't notice a missing one (Ch33), and the instance would fail only at its next start.
 read -ra unit_list <<< "$units"
-for u in tango-lab.target "${unit_list[@]/#/tango-}"; do
+envs=0 missing=()
+for u in tango-lab.target "${unit_list[@]}"; do
   a=$(systemctl is-active "$u" 2>&1)
   e=$(systemctl is-enabled "$u" 2>&1)
-  if [[ $a == active && $e == enabled ]]; then say OK "$u: active, enabled"
-  else say FAIL "$u: $(one "$a"), $(one "$e") (want active, enabled)"; fi
+  p=$(systemctl show -p FragmentPath --value "$u" 2>&1)
+  if [[ $a == active && $e == enabled && $p == /usr/lib/systemd/system/* ]]; then say OK "$u: active, enabled, from the package"
+  else say FAIL "$u: $(one "$a"), $(one "$e"), unit file $(one "${p:-none}") (want active, enabled, from /usr/lib/systemd/system)"; fi
+  while read -r f _; do
+    [[ $f == /* ]] || continue
+    envs=$(( envs + 1 ))
+    [[ -r $f ]] || missing+=("$u: $f")
+  done < <(systemctl show -p EnvironmentFiles --value "$u" 2>/dev/null)
 done
+if (( ${#missing[@]} )); then say FAIL "site data: ${#missing[@]} of $envs environment file(s) missing: ${missing[*]:0:3}"
+elif (( envs == 0 )); then say FAIL "site data: no instance names an environment file (want the package's units)"
+else say OK "site data: all $envs environment file(s) the instances name are present"; fi
 
 # 2. The database answers; 3. every device ON, exported, served from this host.
-TANGO_HOST=$tango_host timeout 30 python3 -c '
+TANGO_HOST=$tango_host timeout 30 "$python" -c '
 import sys
 try:
     import tango
@@ -74,7 +91,7 @@ for name in devices:
     else:
         print("FAIL|%s: %s (%s), %s from %s (want ON, exported from %s)"
               % (name, state, status, served, info.host, expect_host))
-' "$devices" "$expect_host" "$tango_host" || say CANNOT "devices: python3 exit $?"
+' "$devices" "$expect_host" "$tango_host" || say CANNOT "devices: $python exit $?"
 
 # The nat0 address, for the exposure probes run from beamlinehost.
 n=$(ip -4 -o addr show dev "$nat" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
