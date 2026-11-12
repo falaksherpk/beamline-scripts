@@ -7,7 +7,8 @@
 # (beamlinehost, on the lab network): each server's fixed CORBA and heartbeat port
 # accepts connections, while the simulators' ports, the exporter's port (obs only) and
 # the servers' nat0 side stay closed. The ZeroMQ event ports are not probed: a server opens one only once a client
-# subscribes. Read-only: nothing is written, no command is sent to a device.
+# subscribes. And here, the panel's checkout of tango-devices is clean and at the tag of the
+# release tango-ds runs (D7, Part 4 Ch39). Read-only: nothing is written, no command is sent to a device.
 set -uo pipefail
 # shellcheck source-path=SCRIPTDIR/..
 # shellcheck source=fleet-lib.sh
@@ -19,6 +20,10 @@ REACH_PORTS=${CHECK_TANGO_REACH_PORTS:-28368 28369 28370 28371 28372 28468 28469
 CLOSED_PORTS=${CHECK_TANGO_CLOSED_PORTS:-9999 5025 1234 5020 5040}
 # The exporter (Part 4 Ch36) answers obs only: from here its port must be dropped.
 EXPORTER_PORT=${CHECK_TANGO_EXPORTER_PORT:-9580}
+# The panel's checkout here follows every release (D7, owner 2026-11-12, Part 4 Ch39):
+# its tag must be the version of PACKAGE installed on HOST.
+PANEL_DIR=${CHECK_TANGO_PANEL_DIR:-/opt/tango-devices}
+PACKAGE=beamline-tango-devices
 # What beamline-ansible's tango_ds role configures (Ch29: the ufw blocks; Ch35:
 # tango_ds_servers and tango_ds_simulators, one instance each; Ch36: the exporter, outside
 # the target); keep the two in step.
@@ -34,7 +39,7 @@ PROBE_TIMEOUT=3
 # quoted by printf %q; the whole program travels base64-encoded, so its quoting does
 # not depend on two shells.
 remote=$( {
-  printf 'units=%q devices=%q tango_host=%q expect_host=%q nat=%q python=%q\n' "$UNITS" "$DEVICES" "$TANGO_HOST_VAL" "$HOST" "$NAT_IFACE" "$TANGO_PYTHON"
+  printf 'units=%q devices=%q tango_host=%q expect_host=%q nat=%q python=%q pkg=%q\n' "$UNITS" "$DEVICES" "$TANGO_HOST_VAL" "$HOST" "$NAT_IFACE" "$TANGO_PYTHON" "$PACKAGE"
   cat << 'SH'
 say() { printf '%s|%s\n' "$1" "$2"; }
 one() { tr '\n' ' ' <<< "$1" | tr -s ' ' | sed 's/ $//' | cut -c1-200; }
@@ -99,13 +104,15 @@ for name in devices:
 # The nat0 address, for the exposure probes run from beamlinehost.
 n=$(ip -4 -o addr show dev "$nat" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
 say NAT "$n"
+# The release installed here, for the panel's check on beamlinehost (empty if none).
+say VER "$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null)"
 say END "reached"
 SH
 } | base64 -w0 )
 
 rc=0
 out=$(fleet_ssh "$HOST" "echo $remote | base64 -d | bash" 2>&1) || rc=$?
-nat_ip=""
+nat_ip="" pkg_ver=""
 if (( rc == 255 )); then
   fleet_check_cannot "ssh to $HOST failed: ${out:0:300}"
 else
@@ -116,6 +123,7 @@ else
       FAIL) fleet_check_fail "$msg"; n=$(( n + 1 )) ;;
       CANNOT) fleet_check_cannot "$msg"; n=$(( n + 1 )) ;;
       NAT) nat_ip=$msg ;;
+      VER) pkg_ver=$msg ;;
       END) end=1 ;;
     esac
   done <<< "$out"
@@ -179,6 +187,27 @@ else
     1)   fleet_check_fail "exposure: $HOST:$first_port via $NAT_IFACE ($nat_ip) refused: the firewall let it through (want dropped)" ;;
     *)   fleet_check_cannot "exposure: $HOST:$first_port via $NAT_IFACE probe exit $prc" ;;
   esac
+fi
+
+# 7. The panel (D7): this host's checkout of tango-devices is clean and at the tag of the
+#    release HOST runs, so the panel runs the same commit as the devices it names.
+if [[ -z $pkg_ver ]]; then
+  fleet_check_cannot "panel: no $PACKAGE version read from $HOST, $PANEL_DIR not compared"
+else
+  want=v${pkg_ver%%-*}
+  if ! git -C "$PANEL_DIR" rev-parse --git-dir > /dev/null 2>&1; then
+    fleet_check_fail "panel: $PANEL_DIR is not a git checkout (want $want, the release $HOST runs)"
+  elif ! tag=$(git -C "$PANEL_DIR" describe --tags --exact-match 2> /dev/null); then
+    fleet_check_fail "panel: $PANEL_DIR at $(git -C "$PANEL_DIR" rev-parse --short HEAD 2>&1), no release tag; $HOST runs $PACKAGE $pkg_ver (want $want)"
+  elif [[ $tag != "$want" ]]; then
+    fleet_check_fail "panel: $PANEL_DIR at $tag; $HOST runs $PACKAGE $pkg_ver (want $want)"
+  elif ! dirty=$(git -C "$PANEL_DIR" status --porcelain 2>&1); then
+    fleet_check_cannot "panel: git status failed in $PANEL_DIR: ${dirty:0:200}"
+  elif [[ -n $dirty ]]; then
+    fleet_check_fail "panel: $PANEL_DIR at $tag but $(wc -l <<< "$dirty") changed file(s) (want clean)"
+  else
+    fleet_check_ok "panel: $PANEL_DIR at $tag, clean: the release $HOST runs"
+  fi
 fi
 
 fleet_check_exit
