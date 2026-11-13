@@ -8,7 +8,10 @@
 # accepts connections, while the simulators' ports, the exporter's port (obs only) and
 # the servers' nat0 side stay closed. The ZeroMQ event ports are not probed: a server opens one only once a client
 # subscribes. And here, the panel's checkout of tango-devices is clean and at the tag of the
-# release tango-ds runs (D7, Part 4 Ch39). Read-only: nothing is written, no command is sent to a device.
+# release tango-ds runs (D7, Part 4 Ch39). Since Part 4 Ch42: no instance restarted by systemd
+# and none with a reload pending; the vacuum gauge's pressure valid; and the gauge, the
+# interlock and the cup each polled their instrument recently (their poll age, tango-devices
+# 1.2.2). Read-only: nothing is written, no command is sent to a device.
 set -uo pipefail
 # shellcheck source-path=SCRIPTDIR/..
 # shellcheck source=fleet-lib.sh
@@ -34,12 +37,18 @@ UNITS="tango-sim-magnet-link@q1 tango-sim-magnet-psu@q1 tango-sim-picoammeter@fa
 TANGO_PYTHON=/opt/beamline-tango/bin/python3
 NAT_IFACE=nat0
 PROBE_TIMEOUT=3
+# Part 4 Ch42; overridable only to test the check against a wrong target.
+# NRestarts allowed per unit (Restart= restarts since the last start by hand).
+MAX_RESTARTS=${CHECK_TANGO_MAX_RESTARTS:-0}
+# The longest poll age accepted, in seconds: the gauge and the interlock poll every 1 s with
+# a 1 s Modbus timeout, the cup faster; 5 s is several missed polls in a row.
+MAX_POLL_AGE=${CHECK_TANGO_MAX_POLL_AGE:-5}
 
 # Runs on tango-ds as FLEET_SSH_USER; nothing needs root. The values above go first,
 # quoted by printf %q; the whole program travels base64-encoded, so its quoting does
 # not depend on two shells.
 remote=$( {
-  printf 'units=%q devices=%q tango_host=%q expect_host=%q nat=%q python=%q pkg=%q\n' "$UNITS" "$DEVICES" "$TANGO_HOST_VAL" "$HOST" "$NAT_IFACE" "$TANGO_PYTHON" "$PACKAGE"
+  printf 'units=%q devices=%q tango_host=%q expect_host=%q nat=%q python=%q pkg=%q max_restarts=%q max_age=%q\n' "$UNITS" "$DEVICES" "$TANGO_HOST_VAL" "$HOST" "$NAT_IFACE" "$TANGO_PYTHON" "$PACKAGE" "$MAX_RESTARTS" "$MAX_POLL_AGE"
   cat << 'SH'
 say() { printf '%s|%s\n' "$1" "$2"; }
 one() { tr '\n' ' ' <<< "$1" | tr -s ' ' | sed 's/ $//' | cut -c1-200; }
@@ -65,6 +74,20 @@ done
 if (( ${#missing[@]} )); then say FAIL "site data: ${#missing[@]} of $envs environment file(s) missing: ${missing[*]:0:3}"
 elif (( envs == 0 )); then say FAIL "site data: no instance names an environment file (want the package's units)"
 else say OK "site data: all $envs environment file(s) the instances name are present"; fi
+
+# Automatic restarts and pending reloads (Part 4 Ch42): systemd's NRestarts counts the
+# restarts Restart= made since the unit was last started by hand (a deploy, a boot), and
+# NeedDaemonReload means a unit file changed on disk but systemd still runs the old one.
+# Both are invisible to is-active.
+bad=()
+for u in "${unit_list[@]}"; do
+  r=$(systemctl show -p NRestarts --value "$u" 2>&1)
+  d=$(systemctl show -p NeedDaemonReload --value "$u" 2>&1)
+  if [[ ! $r =~ ^[0-9]+$ ]] || (( r > max_restarts )); then bad+=("$u NRestarts=$(one "$r")"); fi
+  [[ $d == no ]] || bad+=("$u NeedDaemonReload=$(one "$d")")
+done
+if (( ${#bad[@]} )); then say FAIL "restarts: ${bad[*]:0:4} (want NRestarts<=$max_restarts, NeedDaemonReload=no on all ${#unit_list[@]})"
+else say OK "restarts: none automatic and no reload pending on all ${#unit_list[@]} unit(s)"; fi
 
 # 2. The database answers; 3. every device ON, exported, served from this host.
 TANGO_HOST=$tango_host timeout 30 "$python" -c '
@@ -99,7 +122,40 @@ for name in devices:
     else:
         print("FAIL|%s: %s (%s), %s from %s (want ON, exported from %s)"
               % (name, state, status, served, info.host, expect_host))
-' "$devices" "$expect_host" "$tango_host" || say CANNOT "devices: $python exit $?"
+
+# The gauge reads its own pressure: State follows its quality since 1.2.1, but the quality
+# is what operators and HDB++ see (Ch39 Case 6), so it is checked by itself too.
+try:
+    g = tango.DeviceProxy("linac/vacuum/gauge1")
+    g.set_source(tango.DevSource.DEV)
+    g.set_timeout_millis(3000)
+    p = g.read_attribute("VacuumPressure")
+    q = str(p.quality)
+    if p.quality == tango.AttrQuality.ATTR_VALID:
+        print("OK|linac/vacuum/gauge1: VacuumPressure %s mbar, %s" % (p.value, q))
+    else:
+        print("FAIL|linac/vacuum/gauge1: VacuumPressure %s mbar, %s (want ATTR_VALID)" % (p.value, q))
+except tango.DevFailed as e:
+    print("FAIL|linac/vacuum/gauge1: VacuumPressure not read: %s" % e.args[0].reason)
+
+# Poll age (tango-devices 1.2.2): State keeps its last value when a poll loop stops
+# (Ch39 Case 2); the time since the last good read does not. Readable in every state.
+max_age = float(sys.argv[4])
+for name, attr in (("linac/vacuum/gauge1", "PollAge"), ("linac/safety/interlock1", "PollAge"),
+                   ("linac/beam/faradaycup1", "poll_age")):
+    try:
+        d = tango.DeviceProxy(name)
+        d.set_source(tango.DevSource.DEV)
+        d.set_timeout_millis(3000)
+        age = d.read_attribute(attr).value
+    except tango.DevFailed as e:
+        print("FAIL|%s: %s not read: %s" % (name, attr, e.args[0].reason))
+        continue
+    if 0 <= age <= max_age:
+        print("OK|%s: last good poll %.1f s ago (limit %g s)" % (name, age, max_age))
+    else:
+        print("FAIL|%s: last good poll %.1f s ago (limit %g s): its poll loop is not reading" % (name, age, max_age))
+' "$devices" "$expect_host" "$tango_host" "$max_age" || say CANNOT "devices: $python exit $?"
 
 # The nat0 address, for the exposure probes run from beamlinehost.
 n=$(ip -4 -o addr show dev "$nat" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)

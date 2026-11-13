@@ -11,6 +11,7 @@
 # each server's fixed CORBA and heartbeat port accepts, the nat0 side stays closed. The
 # ZeroMQ event ports are not probed (opened only once a client subscribes). Read-only:
 # nothing is written, no command is sent to a device, no macro is run.
+# Since Part 4 Ch42: neither unit restarted by systemd, nor with a reload pending.
 set -uo pipefail
 # shellcheck source-path=SCRIPTDIR/..
 # shellcheck source=fleet-lib.sh
@@ -34,6 +35,9 @@ UNITS="tango-pool@linac tango-macroserver@linac"
 TANGO_PYTHON=/opt/beamline-tango/bin/python3
 NAT_IFACE=nat0
 PROBE_TIMEOUT=3
+# NRestarts allowed per unit (Part 4 Ch42); overridable only to test the check against a
+# wrong target.
+MAX_RESTARTS=${CHECK_SARDANA_MAX_RESTARTS:-0}
 
 # Runs on tango-ds as FLEET_SSH_USER; nothing needs root. The values above go first,
 # quoted by printf %q; the whole program travels base64-encoded, so its quoting does
@@ -41,6 +45,7 @@ PROBE_TIMEOUT=3
 remote=$( {
   printf 'units=%q tango_host=%q expect_host=%q pool=%q ms=%q door=%q elements=%q mntgrp=%q nat=%q python=%q\n' \
     "$UNITS" "$TANGO_HOST_VAL" "$SERVER_HOST" "$POOL_DEV" "$MS_DEV" "$DOOR_DEV" "$ELEMENTS" "$MNTGRP" "$NAT_IFACE" "$TANGO_PYTHON"
+  printf 'max_restarts=%q\n' "$MAX_RESTARTS"
   cat << 'SH'
 say() { printf '%s|%s\n' "$1" "$2"; }
 one() { tr '\n' ' ' <<< "$1" | tr -s ' ' | sed 's/ $//' | cut -c1-200; }
@@ -66,6 +71,20 @@ done
 if (( ${#missing[@]} )); then say FAIL "site data: ${#missing[@]} of $envs environment file(s) missing: ${missing[*]:0:3}"
 elif (( envs == 0 )); then say FAIL "site data: no instance names an environment file (want the package's units)"
 else say OK "site data: all $envs environment file(s) the instances name are present"; fi
+
+# Automatic restarts and pending reloads (Part 4 Ch42): systemd's NRestarts counts the
+# restarts Restart= made since the unit was last started by hand (a deploy, a boot), and
+# NeedDaemonReload means a unit file changed on disk but systemd still runs the old one.
+# Both are invisible to is-active.
+bad=()
+for u in "${unit_list[@]}"; do
+  r=$(systemctl show -p NRestarts --value "$u" 2>&1)
+  d=$(systemctl show -p NeedDaemonReload --value "$u" 2>&1)
+  if [[ ! $r =~ ^[0-9]+$ ]] || (( r > max_restarts )); then bad+=("$u NRestarts=$(one "$r")"); fi
+  [[ $d == no ]] || bad+=("$u NeedDaemonReload=$(one "$d")")
+done
+if (( ${#bad[@]} )); then say FAIL "restarts: ${bad[*]:0:4} (want NRestarts<=$max_restarts, NeedDaemonReload=no on all ${#unit_list[@]})"
+else say OK "restarts: none automatic and no reload pending on all ${#unit_list[@]} unit(s)"; fi
 
 # 2. The three devices exported from this host and in a good state; 3. the Pool's
 #    elements; 4. what the MacroServer knows; 5. its ActiveMntGrp.

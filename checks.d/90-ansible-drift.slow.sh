@@ -90,4 +90,12 @@ tasks=$(awk '/^(TASK|RUNNING HANDLER) \[/ {t=$0; hd=($0 ~ /^RUNNING HANDLER/); s
              /^(changed|failed|fatal):/ {split($2,h,"]"); gsub(/\[/,"",h[1]); print "    " $1 " " t " -> " h[1]}' <<< "$out" | sort -u)
 if [[ -n $tasks ]]; then printf '  tasks behind the findings:\n%s\n' "$tasks"; fi
 
+# And what each failure said (Part 4 Ch41's finding: a fatal on obs was named, its message
+# lost). Ansible's default output puts a result on one line, msg as a JSON string; a line
+# without one is shown as it is.
+errors=$(grep -aE '^(fatal|failed): \[' <<< "$out" | sed -E \
+  -e 's/^(fatal|failed): \[([^]]+)\](: [A-Z!]+| \(item=[^)]*\))?.*"msg": "(([^"\\]|\\.)*)".*/\2: \4/' \
+  -e 's/^/    /' | cut -c1-300 | sort -u)
+if [[ -n $errors ]]; then printf '  their messages:\n%s\n' "$errors"; fi
+
 fleet_check_exit

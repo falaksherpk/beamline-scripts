@@ -10,6 +10,8 @@
 # (3306, for Grafana on obs only; Part 4 Ch36) is dropped. The ZeroMQ event ports are not
 # probed (opened only once a client subscribes). Read-only: nothing is written, no
 # command is sent to a device, no SQL is run.
+# Since Part 4 Ch42: hdbpp-es, hdbpp-cm, tango-db and mariadb not restarted by systemd and
+# none with a reload pending (F2, Ch39 Case 4).
 set -uo pipefail
 # shellcheck source-path=SCRIPTDIR/..
 # shellcheck source=fleet-lib.sh
@@ -32,6 +34,12 @@ PROBE_TIMEOUT=3
 # The archive's MariaDB (beamline-ansible role tango_db: tango_db_bind_addresses, ufw
 # from obs only; Part 4 Ch36). Overridable only to test the check.
 ARCHIVE_PORT=${CHECK_HDBPP_ARCHIVE_PORT:-3306}
+# Checked for automatic restarts and pending reloads (Part 4 Ch42): both servers, and the
+# two services they start after. F2 (Ch39 Case 4): hdbpp-es restarted once on every boot
+# until tango-db.service waited for Databaseds (beamline-ansible, Ch42).
+RESTART_UNITS="hdbpp-es hdbpp-cm tango-db mariadb"
+# NRestarts allowed per unit; overridable only to test the check against a wrong target.
+MAX_RESTARTS=${CHECK_HDBPP_MAX_RESTARTS:-0}
 
 # Runs on tango-db as FLEET_SSH_USER; nothing needs root. The values above go first,
 # quoted by printf %q; the whole program travels base64-encoded, so its quoting does
@@ -39,6 +47,7 @@ ARCHIVE_PORT=${CHECK_HDBPP_ARCHIVE_PORT:-3306}
 remote=$( {
   printf 'units=%q tango_host=%q expect_host=%q es_dev=%q cm_dev=%q expect=%q nat=%q\n' \
     "$UNITS" "$TANGO_HOST_VAL" "$SERVER_HOST" "$ES_DEV" "$CM_DEV" "$EXPECT_ATTRS" "$NAT_IFACE"
+  printf 'restart_units=%q max_restarts=%q\n' "$RESTART_UNITS" "$MAX_RESTARTS"
   cat << 'SH'
 say() { printf '%s|%s\n' "$1" "$2"; }
 one() { tr '\n' ' ' <<< "$1" | tr -s ' ' | sed 's/ $//' | cut -c1-200; }
@@ -51,6 +60,21 @@ for u in hdbpp.target "${unit_list[@]/#/hdbpp-}"; do
   if [[ $a == active && $e == enabled ]]; then say OK "$u: active, enabled"
   else say FAIL "$u: $(one "$a"), $(one "$e") (want active, enabled)"; fi
 done
+read -ra unit_list <<< "$restart_units"
+
+# Automatic restarts and pending reloads (Part 4 Ch42): systemd's NRestarts counts the
+# restarts Restart= made since the unit was last started by hand (a deploy, a boot), and
+# NeedDaemonReload means a unit file changed on disk but systemd still runs the old one.
+# Both are invisible to is-active.
+bad=()
+for u in "${unit_list[@]}"; do
+  r=$(systemctl show -p NRestarts --value "$u" 2>&1)
+  d=$(systemctl show -p NeedDaemonReload --value "$u" 2>&1)
+  if [[ ! $r =~ ^[0-9]+$ ]] || (( r > max_restarts )); then bad+=("$u NRestarts=$(one "$r")"); fi
+  [[ $d == no ]] || bad+=("$u NeedDaemonReload=$(one "$d")")
+done
+if (( ${#bad[@]} )); then say FAIL "restarts: ${bad[*]:0:4} (want NRestarts<=$max_restarts, NeedDaemonReload=no on all ${#unit_list[@]})"
+else say OK "restarts: none automatic and no reload pending on all ${#unit_list[@]} unit(s)"; fi
 
 # 2. Both devices ON, exported from this host; 3. the EventSubscriber's view.
 TANGO_HOST=$tango_host timeout 30 python3 -c '
